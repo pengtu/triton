@@ -849,8 +849,12 @@ private:
     SmallVector<SmallVector<Value>> multiDimIdx(elemsPerThread,
                                                 SmallVector<Value>(rank));
     for (unsigned n = 0; n < elemsPerThread; ++n)
-      for (unsigned k = 0; k < rank; ++k)
+      for (unsigned k = 0; k < rank; ++k) {
+        // std::cout << n << "," << k <<":" << std::endl << offset[n][k] << std::endl;
+        std::cout << offset[n][k] << std::endl;
+        multiDimBase[k].dump();
         multiDimIdx[n][k] = add(multiDimBase[k], idx_val(offset[n][k]));
+      }
     return multiDimIdx;
   }
 

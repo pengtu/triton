@@ -64,11 +64,14 @@ unsigned getElemsPerThread(Attribute layout, ArrayRef<int64_t> shape) {
 }
 
 unsigned getElemsPerThread(Type type) {
+#if 0
   if (type.isIntOrIndexOrFloat() || type.isa<triton::Float8Type>() ||
       type.isa<triton::PointerType>())
     return 1;
-  auto tensorType = type.cast<RankedTensorType>();
-  return getElemsPerThread(tensorType.getEncoding(), tensorType.getShape());
+#endif
+  if (auto tensorType = type.dyn_cast<RankedTensorType>()) 
+    return getElemsPerThread(tensorType.getEncoding(), tensorType.getShape());
+  return 1;
 }
 
 SmallVector<unsigned> getThreadsPerWarp(const Attribute &layout) {

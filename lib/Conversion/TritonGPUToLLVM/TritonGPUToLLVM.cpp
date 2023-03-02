@@ -296,7 +296,19 @@ struct MakeRangeOpConversion
     auto elemTy = rankedTy.getElementType();
     assert(elemTy.isInteger(32));
     Value start = createIndexAttrConstant(rewriter, loc, elemTy, op.getStart());
-    auto idxs = emitIndices(loc, rewriter, layout, shape);
+        
+    auto sizePerThread= triton::gpu::getSizePerThread(layout);
+    auto vlen = sizePerThread[0];
+    auto nvec = ceil<unsigned>(elemsPerThread, vlen);
+    SmallVector<SmallVector<Value>> idxs;
+
+    if (vlen > 1) {
+      elemTy = LLVM::getFixedVectorType(elemTy, vlen);
+      idxs = emitVectorizedIndices(loc, rewriter, layout, shape);
+    } else {
+      idxs = emitIndices(loc, rewriter, layout, shape);
+    }
+    
     unsigned elems = idxs.size();
     SmallVector<Value> retVals(elems);
     // TODO: slice layout has more elements than expected.

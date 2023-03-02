@@ -32,10 +32,22 @@ struct SplatOpConversion
     auto srcType = typeConverter->convertType(elemType);
     auto llSrc = bitcast(constVal, srcType);
     size_t elemsPerThread = getElemsPerThread(tensorTy);
+
+    // Use the first dimension size as SIMD vector length    
+    auto layout = tensorTy.getEncoding();
+    auto shape = tensorTy.getShape();
+    auto sizePerThread= triton::gpu::getSizePerThread(layout);
+    auto vlen = sizePerThread[0];
+    auto nvec = ceil<unsigned>(elemsPerThread, vlen);
+    if (vlen > 1) {
+      srcType = LLVM::getFixedVectorType(srcType, vlen);
+    }
+
     llvm::SmallVector<Value> elems(elemsPerThread, llSrc);
-    llvm::SmallVector<Type> elemTypes(elems.size(), srcType);
+    llvm::SmallVector<Type> elemTypes(nvec, srcType);
     auto structTy =
         LLVM::LLVMStructType::getLiteral(rewriter.getContext(), elemTypes);
+    structTy.dump();
 
     return getStructFromElements(loc, elems, rewriter, structTy);
   }

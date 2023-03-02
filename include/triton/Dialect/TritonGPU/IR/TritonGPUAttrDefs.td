@@ -227,10 +227,11 @@ for
     AttrBuilder<(ins "ArrayRef<int64_t>":$shape,
                      "ArrayRef<unsigned>":$sizePerThread,
                      "ArrayRef<unsigned>":$order,
-                     "unsigned":$numWarps), [{
+                     "unsigned":$numWarps,
+                     CArg<"unsigned", "32">:$numHWThreadsPerWarp), [{
       int rank = sizePerThread.size();
-      unsigned remainingLanes = 32;
-      unsigned remainingThreads = numWarps*32;
+      unsigned remainingLanes = numHWThreadsPerWarp;
+      unsigned remainingThreads = numWarps*numHWThreadsPerWarp;
       unsigned remainingWarps = numWarps;
       unsigned prevLanes = 1;
       unsigned prevWarps = 1;
@@ -248,7 +249,7 @@ for
         prevWarps *= warpsPerCTA[i];
       }
       // Expand the last dimension to fill the remaining lanes and warps
-      threadsPerWarp[order[rank-1]] = 32 / prevLanes;
+      threadsPerWarp[order[rank-1]] = numHWThreadsPerWarp / prevLanes;
       warpsPerCTA[order[rank-1]] = numWarps / prevWarps;
 
       return $_get(context, sizePerThread, threadsPerWarp, warpsPerCTA, order);

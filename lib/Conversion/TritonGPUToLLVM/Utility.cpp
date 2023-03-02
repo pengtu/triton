@@ -5,11 +5,63 @@ namespace mlir {
 namespace LLVM {
 using namespace mlir::triton;
 
+Value getVectorizedStructFromElements(Location loc, ValueRange resultVals,
+                            ConversionPatternRewriter &rewriter,
+                            Type structType) {
+  if (!structType.isa<LLVM::LLVMStructType>()) {
+    return *resultVals.begin();
+  }
+
+  Value llvmStruct = rewriter.create<LLVM::UndefOp>(loc, structType);
+  structType.dump();
+
+  ArrayRef<Type> types =
+    llvmStruct.getType().cast<LLVM::LLVMStructType>().getBody();
+  SmallVector<Value> elements(types.size());
+  for (unsigned i = 0; i < types.size(); ++i) {
+    Type type = types[i];
+    type.dump();
+    elements[i] = undef(type);
+  }
+
+  uint32_t elemIndex = 0;
+  uint32_t elemOffset = 0;
+  uint32_t accuElemSize = 0;
+  uint32_t vlen = LLVM::isCompatibleVectorType(types[elemIndex]) ? 
+    LLVM::getVectorNumElements(types[elemIndex]).getFixedValue() : 1 ;
+  for (const auto &v : llvm::enumerate(resultVals)) {
+    assert(v.value() && "can not insert null values");
+    if ((v.index() - accuElemSize) == vlen) {
+      llvmStruct = insert_val(structType, llvmStruct, elements[elemIndex], elemIndex);
+      accuElemSize += vlen;
+      elemIndex++;
+      vlen = LLVM::isCompatibleVectorType(types[elemIndex]) ? 
+        LLVM::getVectorNumElements(types[elemIndex]).getFixedValue() : 1 ;
+      elemOffset = 0;
+    }
+    elements[elemIndex] = insert_element(types[elemIndex], elements[elemIndex], v.value(), i32_val(elemOffset));
+    elemOffset++;
+  }
+  llvmStruct = insert_val(structType, llvmStruct, elements[elemIndex], elemIndex);
+
+  return llvmStruct;
+}
+
 Value getStructFromElements(Location loc, ValueRange resultVals,
                             ConversionPatternRewriter &rewriter,
                             Type structType) {
   if (!structType.isa<LLVM::LLVMStructType>()) {
     return *resultVals.begin();
+  }
+
+  structType.dump();
+  
+  auto elemType = structType.dyn_cast<LLVM::LLVMStructType>().getBody()[0];
+  
+  elemType.dump();
+
+  if (LLVM::isCompatibleVectorType(elemType)) {
+    return getVectorizedStructFromElements(loc, resultVals, rewriter, structType);
   }
 
   Value llvmStruct = rewriter.create<LLVM::UndefOp>(loc, structType);
