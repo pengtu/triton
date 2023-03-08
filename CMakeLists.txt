@@ -192,6 +192,18 @@ add_subdirectory(include)
 add_subdirectory(lib)
 add_subdirectory(bin)
 
+# LLVM-SPIRV
+if(NOT DEFINED LLVM_SPIRV)
+  if(EXISTS "${LLVM_BIN_PATH}/llvm-spirv")
+    set(LLVM_SPIRV "${LLVM_BIN_PATH}/llvm-spirv" CACHE PATH "llvm-spirv")
+  elseif(EXISTS "${LLVM_SPIRV_BINARY}")
+    set(LLVM_SPIRV "${LLVM_SPIRV_BINARY}" CACHE PATH "llvm-spirv")
+  else()
+    message(FATAL_ERROR "Can't find llvm-spirv at ${LLVM_BIN_PATH}. Please install it into that directory, or provide explicit path with -DLLVM_SPIRV_BINARY=")
+  endif()
+endif()
+message(STATUS "Using llvm-spirv: ${LLVM_SPIRV}")
+
 # find_package(PythonLibs REQUIRED)
 
 set(TRITON_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
