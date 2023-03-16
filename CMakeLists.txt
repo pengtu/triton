@@ -196,12 +196,21 @@ add_subdirectory(bin)
 if(NOT DEFINED LLVM_SPIRV)
   if(EXISTS "${LLVM_BIN_PATH}/llvm-spirv")
     set(LLVM_SPIRV "${LLVM_BIN_PATH}/llvm-spirv" CACHE PATH "llvm-spirv")
+    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_BIN_PATH}/../include")
+    set(LLVM_SPIRV_LIB_DIR "${LLVM_BIN_PAT}/../lib")
   elseif(EXISTS "${LLVM_SPIRV_BINARY}")
     set(LLVM_SPIRV "${LLVM_SPIRV_BINARY}" CACHE PATH "llvm-spirv")
+    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_SPIRV_BINARY}/../include")
+    set(LLVM_SPRIV_LIB_DIR "{LLVM_SPIRV_BINARY}/../lib")
   else()
     message(FATAL_ERROR "Can't find llvm-spirv at ${LLVM_BIN_PATH}. Please install it into that directory, or provide explicit path with -DLLVM_SPIRV_BINARY=")
   endif()
 endif()
+include_directories(${LLVM_SPIRV_INCLUDE_DIR})
+set(LLVM_SPIRV_LDFLAGS "-L${LLVM_SPIRV_LIB_DIR}")
+set(LLVM_SPIRV_LIBRARY
+  libLLVMSPIRVLib.a
+)
 message(STATUS "Using llvm-spirv: ${LLVM_SPIRV}")
 
 # find_package(PythonLibs REQUIRED)
@@ -220,6 +229,7 @@ if(TRITON_BUILD_PYTHON_MODULE)
     TritonGPUTransforms
     TritonLLVMIR
     TritonPTX
+    TritonSPIRV
     ${dialect_libs}
     ${conversion_libs}
     # optimizations
@@ -234,20 +244,20 @@ if(TRITON_BUILD_PYTHON_MODULE)
     MLIRIR
   )
   if(WIN32)
-    target_link_libraries(triton PRIVATE ${LLVM_LIBRARIES} ${CMAKE_DL_LIBS}
-      ${TRITON_LIBRARIES}
+    target_link_libraries(triton PRIVATE ${LLVM_LIBRARIES} ${LLVM_SPIRV_LIBRARY} 
+      ${CMAKE_DL_LIBS} ${TRITON_LIBRARIES}
     )
   elseif(APPLE)
-    target_link_libraries(triton ${LLVM_LIBRARIES} z
+    target_link_libraries(triton ${LLVM_LIBRARIES} ${LLVM_SPIRV_LIBRARY} z
       ${TRITON_LIBRARIES}
     )
   else()
-    target_link_libraries(triton ${LLVM_LIBRARIES} z stdc++fs
-      ${TRITON_LIBRARIES}
+    target_link_libraries(triton ${LLVM_LIBRARIES} ${LLVM_SPIRV_LIBRARY} z
+      stdc++fs ${TRITON_LIBRARIES}
     )
   endif()
   
-  target_link_options(triton PRIVATE ${LLVM_LDFLAGS})
+  target_link_options(triton PRIVATE ${LLVM_LDFLAGS} ${LLVM_SPIRV_LDFLAGS})
 endif()
 
 if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
