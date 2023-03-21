@@ -16,6 +16,7 @@
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
 #include "triton/Target/LLVMIR/LLVMIRTranslation.h"
 #include "triton/Target/PTX/PTXTranslation.h"
+#include "triton/Target/SPIRV/SPIRVTranslation.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/InitLLVM.h"
@@ -119,6 +120,8 @@ LogicalResult tritonTranslateMain(int argc, char **argv,
   else if (targetKind == "ptx")
     llvm::outs() << ::triton::translateLLVMIRToPTX(*llvmir, SMArch.getValue(),
                                                    ptxVersion.getValue());
+  else if (targetKind == "spirv")
+    llvm::outs() << ::triton::translateLLVMIRToSPIRV(*llvmir);
 
   return success();
 }

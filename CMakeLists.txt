@@ -190,18 +190,18 @@ include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
 
 add_subdirectory(include)
 add_subdirectory(lib)
-add_subdirectory(bin)
+#add_subdirectory(bin)
 
 # LLVM-SPIRV
 if(NOT DEFINED LLVM_SPIRV)
   if(EXISTS "${LLVM_BIN_PATH}/llvm-spirv")
     set(LLVM_SPIRV "${LLVM_BIN_PATH}/llvm-spirv" CACHE PATH "llvm-spirv")
     set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_BIN_PATH}/../include")
-    set(LLVM_SPIRV_LIB_DIR "${LLVM_BIN_PAT}/../lib")
-  elseif(EXISTS "${LLVM_SPIRV_BINARY}")
-    set(LLVM_SPIRV "${LLVM_SPIRV_BINARY}" CACHE PATH "llvm-spirv")
-    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_SPIRV_BINARY}/../include")
-    set(LLVM_SPRIV_LIB_DIR "{LLVM_SPIRV_BINARY}/../lib")
+    set(LLVM_SPRIV_LIB_DIR "${LLVM_BIN_PATH}/../lib")    
+  elseif(EXISTS "${LLVM_SPIRV_BIN_PATH}/llvm-spirv")
+    set(LLVM_SPIRV "${LLVM_SPIRV_BIN_PATH}/llvm-spirv" CACHE PATH "llvm-spirv")
+    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_SPIRV_BIN_PATH}/../include")
+    set(LLVM_SPIRV_LIB_DIR "${LLVM_SPIRV_BIN_PATH}/../lib")
   else()
     message(FATAL_ERROR "Can't find llvm-spirv at ${LLVM_BIN_PATH}. Please install it into that directory, or provide explicit path with -DLLVM_SPIRV_BINARY=")
   endif()
@@ -212,6 +212,8 @@ set(LLVM_SPIRV_LIBRARY
   libLLVMSPIRVLib.a
 )
 message(STATUS "Using llvm-spirv: ${LLVM_SPIRV}")
+message(STATUS "LLVM_SPIRV_INCLUDE_DIR: ${LLVM_SPIRV_INCLUDE_DIR}")
+message(STATUS "LLVM_SPIRV_LIB_DIR: ${LLVM_SPIRV_LIB_DIR}")
 
 # find_package(PythonLibs REQUIRED)
 
@@ -268,6 +270,8 @@ if(TRITON_BUILD_PYTHON_MODULE AND NOT WIN32)
     endif()
     target_link_libraries(triton ${CUTLASS_LIBRARIES} ${PYTHON_LDFLAGS})
 endif()
+
+add_subdirectory(bin)
 
 add_subdirectory(test)
 
