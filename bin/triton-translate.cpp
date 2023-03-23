@@ -80,7 +80,7 @@ LogicalResult tritonTranslateMain(int argc, char **argv,
       llvm::cl::init("-"));
 
   static llvm::cl::opt<std::string> targetKind(
-      "target", llvm::cl::desc("<translation target, options: llvmir/ptx>"),
+      "target", llvm::cl::desc("<translation target, options: llvmir/ptx/spirv>"),
       llvm::cl::value_desc("target"), llvm::cl::init("llvmir"));
 
   static llvm::cl::opt<int> SMArch("sm", llvm::cl::desc("sm arch"),
