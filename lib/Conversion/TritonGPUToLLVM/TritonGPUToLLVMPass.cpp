@@ -1,13 +1,19 @@
 #include "triton/Conversion/TritonGPUToLLVM/TritonGPUToLLVMPass.h"
 
+#include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM//ControlFlowToLLVM.h"
-#include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+// #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/GPUToSPIRV/GPUToSPIRVPass.h"
+#include "mlir/Conversion/GPUToSPIRV/GPUToSPIRV.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+// #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+
+#include "mlir/Dialect/SPIRV/Transforms/SPIRVConversion.h"
+#include "mlir/Conversion/SPIRVToLLVM/SPIRVToLLVM.h"
 #include "mlir/Pass/Pass.h"
 #include "triton/Analysis/Allocation.h"
 #include "triton/Analysis/AxisInfo.h"
@@ -37,10 +43,11 @@ public:
   explicit TritonLLVMConversionTarget(MLIRContext &ctx)
       : ConversionTarget(ctx) {
     addLegalDialect<LLVM::LLVMDialect>();
-    addLegalDialect<NVVM::NVVMDialect>();
+//    addIllegalDialect<NVVM::NVVMDialect>();
+//    addLegalDialect<mlir::spirv::SPIRVDialect>();
     addIllegalDialect<triton::TritonDialect>();
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
-    addIllegalDialect<mlir::gpu::GPUDialect>();
+    addLegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
   }
 };
@@ -50,7 +57,7 @@ public:
   explicit TritonLLVMFunctionConversionTarget(MLIRContext &ctx)
       : ConversionTarget(ctx) {
     addLegalDialect<LLVM::LLVMDialect>();
-    addLegalDialect<NVVM::NVVMDialect>();
+//    addLegalDialect<NVVM::NVVMDialect>();
     addIllegalOp<mlir::func::FuncOp>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
   }
@@ -76,7 +83,7 @@ struct FuncOpConversion : public FuncOpConversionBase {
       return failure();
 
     auto ctx = funcOp->getContext();
-
+#if 0
     // Set an attribute to indicate this function is a kernel entry.
     newFuncOp->setAttr("nvvm.kernel",
                        rewriter.getIntegerAttr(type::u1Ty(ctx), 1));
@@ -84,7 +91,7 @@ struct FuncOpConversion : public FuncOpConversionBase {
     // Set an attribute for maxntidx, it could be used in latter LLVM codegen
     // for `nvvm.annotation` metadata.
     newFuncOp->setAttr("nvvm.maxntid", rewriter.getI32ArrayAttr(32 * numWarps));
-
+#endif
     rewriter.eraseOp(funcOp);
     return success();
   }
@@ -209,7 +216,13 @@ public:
     mlir::populateMathToLLVMConversionPatterns(typeConverter, patterns);
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
-    mlir::populateGpuToNVVMConversionPatterns(typeConverter, patterns);
+//    mlir::populateGpuToNVVMConversionPatterns(typeConverter, patterns);
+//    auto targetAttr = spirv::lookupTargetEnvOrDefault(mod);
+//    SPIRVConversionOptions options;
+//    SPIRVTypeConverter spirvTypeConverter(targetAttr, options);
+//    mlir::populateGPUToSPIRVPatterns(spirvTypeConverter, patterns);
+//    mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
+//    mlir::populateSPIRVToLLVMConversionPatterns(typeConverter, patterns);
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
@@ -240,7 +253,8 @@ private:
         loc, arrayTy, /*isConstant=*/false, LLVM::Linkage::External,
         "global_smem", /*value=*/Attribute(), /*alignment=*/0,
         // Add ROCm support.
-        static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace));
+        0 // static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace)
+        );
     SmallVector<LLVM::LLVMFuncOp> funcs;
     mod.walk([&](LLVM::LLVMFuncOp func) { funcs.push_back(func); });
     assert(funcs.size() == 1 &&

@@ -1,4 +1,4 @@
-add_subdirectory(FileCheck)
+# add_subdirectory(FileCheck)
 # add_llvm_executable(FileCheck FileCheck/FileCheck.cpp)
 # target_link_libraries(FileCheck PRIVATE LLVMFileCheck LLVMSupport)
 

@@ -25,6 +25,7 @@ add_mlir_conversion_library(TritonGPUToLLVM
     MLIRPass
     MLIRGPUOps
     MLIRGPUToNVVMTransforms
+    MLIRGPUToSPIRV
     MLIRGPUTransforms
     TritonAnalysis
     TritonIR
