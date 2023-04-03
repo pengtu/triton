@@ -44,10 +44,10 @@ public:
       : ConversionTarget(ctx) {
     addLegalDialect<LLVM::LLVMDialect>();
 //    addIllegalDialect<NVVM::NVVMDialect>();
-//    addLegalDialect<mlir::spirv::SPIRVDialect>();
+    addIllegalDialect<mlir::spirv::SPIRVDialect>();
     addIllegalDialect<triton::TritonDialect>();
     addIllegalDialect<triton::gpu::TritonGPUDialect>();
-    addLegalDialect<mlir::gpu::GPUDialect>();
+    addIllegalDialect<mlir::gpu::GPUDialect>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
   }
 };
@@ -217,12 +217,18 @@ public:
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
 //    mlir::populateGpuToNVVMConversionPatterns(typeConverter, patterns);
-//    auto targetAttr = spirv::lookupTargetEnvOrDefault(mod);
-//    SPIRVConversionOptions options;
-//    SPIRVTypeConverter spirvTypeConverter(targetAttr, options);
-//    mlir::populateGPUToSPIRVPatterns(spirvTypeConverter, patterns);
-//    mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
-//    mlir::populateSPIRVToLLVMConversionPatterns(typeConverter, patterns);
+    auto triple = spirv::VerCapExtAttr::get(spirv::Version::V_1_0,
+                                          {spirv::Capability::Kernel},
+                                          ArrayRef<spirv::Extension>(), context);
+    auto targetAttr = spirv::TargetEnvAttr::get(
+      triple, spirv::getDefaultResourceLimits(context),
+      spirv::ClientAPI::Unknown, spirv::Vendor::Unknown,
+      spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
+    SPIRVConversionOptions options;
+    SPIRVTypeConverter spirvTypeConverter(targetAttr, options);
+    mlir::populateGPUToSPIRVPatterns(spirvTypeConverter, patterns);
+    mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
+    mlir::populateSPIRVToLLVMConversionPatterns(typeConverter, patterns);
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
