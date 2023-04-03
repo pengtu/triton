@@ -1,7 +1,3 @@
-# add_subdirectory(FileCheck)
-# add_llvm_executable(FileCheck FileCheck/FileCheck.cpp)
-# target_link_libraries(FileCheck PRIVATE LLVMFileCheck LLVMSupport)
-
 get_property(dialect_libs GLOBAL PROPERTY MLIR_DIALECT_LIBS)
 get_property(conversion_libs GLOBAL PROPERTY MLIR_CONVERSION_LIBS)
 
@@ -34,6 +30,7 @@ llvm_update_compile_flags(triton-translate)
          TritonGPUTransforms
          TritonLLVMIR
          TritonPTX
+         TritonHSACO
          TritonSPIRV
          ${dialect_libs}
          ${conversion_libs}
@@ -59,6 +56,7 @@ llvm_update_compile_flags(triton-translate)
          MLIRTransformUtils
          MLIRLLVMToLLVMIRTranslation
          MLIRNVVMToLLVMIRTranslation
+         MLIRROCDLToLLVMIRTranslation
          )
 mlir_check_all_link_libraries(triton-translate)
 target_link_options(triton-translate PRIVATE ${LLVM_SPIRV_LDFLAGS})

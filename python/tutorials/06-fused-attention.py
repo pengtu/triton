@@ -1,6 +1,7 @@
 """
 Fused Attention
 ===============
+
 This is a Triton implementation of the Flash Attention algorithm
 (see: Dao et al., https://arxiv.org/pdf/2205.14135v2.pdf; Rabe and Staats https://arxiv.org/pdf/2112.05682v2.pdf)
 """
@@ -223,6 +224,7 @@ class _attention(torch.autograd.Function):
             BLOCK_DMODEL=Lk, num_warps=num_warps,
             num_stages=2,
         )
+        # print(h.asm["ttgir"])
 
         ctx.save_for_backward(q, k, v, o, L, m)
         ctx.grid = grid
@@ -260,6 +262,7 @@ class _attention(torch.autograd.Function):
             BLOCK_DMODEL=ctx.BLOCK_DMODEL, num_warps=8,
             num_stages=1,
         )
+        # print(h.asm["ttgir"])
         return dq, dk, dv, None
 
 
@@ -296,10 +299,10 @@ def test_op(Z, H, N_CTX, D_HEAD, dtype=torch.float16):
     tri_dk, k.grad = k.grad.clone(), None
     tri_dq, q.grad = q.grad.clone(), None
     # compare
-    triton.testing.assert_almost_equal(ref_out, tri_out)
-    triton.testing.assert_almost_equal(ref_dv, tri_dv)
-    triton.testing.assert_almost_equal(ref_dk, tri_dk)
-    triton.testing.assert_almost_equal(ref_dq, tri_dq)
+    assert torch.allclose(ref_out, tri_out, atol=1e-2, rtol=0)
+    assert torch.allclose(ref_dv, tri_dv, atol=1e-2, rtol=0)
+    assert torch.allclose(ref_dk, tri_dk, atol=1e-2, rtol=0)
+    assert torch.allclose(ref_dq, tri_dq, atol=1e-2, rtol=0)
 
 
 try:

@@ -8,94 +8,107 @@
 namespace mlir {
 namespace triton {
 
-// Type inference
-static Type getI1SameShape(Type type) {
-  auto i1Type = IntegerType::get(type.getContext(), 1);
-  if (auto tensorType = type.dyn_cast<RankedTensorType>())
-    return RankedTensorType::get(tensorType.getShape(), i1Type,
-                                 tensorType.getEncoding());
-  return i1Type;
-}
-
-static Type getI32SameShape(Type type) {
-  auto i32Type = IntegerType::get(type.getContext(), 32);
-  if (auto tensorType = type.dyn_cast<RankedTensorType>())
-    return RankedTensorType::get(tensorType.getShape(), i32Type,
-                                 tensorType.getEncoding());
-  return i32Type;
-}
-
-static Type getPointerTypeSameShape(Type type) {
-  if (auto tensorType = type.dyn_cast<RankedTensorType>()) {
-    Type elementType = tensorType.getElementType();
-    auto shape = tensorType.getShape();
-    PointerType ptrType = PointerType::get(elementType, 1);
-    return RankedTensorType::get(shape, ptrType, tensorType.getEncoding());
-  } else {
-    return PointerType::get(type, 1);
-  }
-}
-
 // Parser & printer for assembly forms
 ParseResult LoadOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Parse operands
   SmallVector<OpAsmParser::UnresolvedOperand, 4> allOperands;
-  Type resultTypes[1];
   SMLoc allOperandLoc = parser.getCurrentLocation();
   if (parser.parseOperandList(allOperands) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
-      parser.parseCustomTypeWithFallback(resultTypes[0]))
+      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
     return failure();
 
-  result.addTypes(resultTypes);
-
+  // Operand types
   SmallVector<Type> operandTypes;
-  operandTypes.push_back(getPointerTypeSameShape(resultTypes[0])); // ptr
+
+  // Parse `optional(type(ptr)) -> type(result)`
+  Type ptrType, resultType;
+  if (parser.parseType(resultType))
+    return failure();
+  if (parser.parseOptionalArrow().succeeded()) {
+    ptrType = resultType;
+    if (parser.parseType(resultType))
+      return failure();
+    operandTypes.push_back(ptrType);
+    result.addTypes(resultType);
+  } else {
+    operandTypes.push_back(getPointerTypeSameShape(resultType));
+    result.addTypes(resultType);
+  }
+
+  // Determine `mask` and `other`
   int hasMask = 0, hasOther = 0;
   if (allOperands.size() >= 2) {
-    operandTypes.push_back(getI1SameShape(resultTypes[0])); // mask
+    operandTypes.push_back(getI1SameShape(resultType));
     hasMask = 1;
   }
   if (allOperands.size() >= 3) {
-    operandTypes.push_back(resultTypes[0]); // other
+    operandTypes.push_back(resultType);
     hasOther = 1;
   }
 
   if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
                              result.operands))
     return failure();
-  // Deduce operand_segment_sizes from the number of the operands.
-  auto operand_segment_sizesAttrName =
+
+  // Deduce `operandSegmentSizes` from the number of the operands
+  auto operandSegmentSizesAttrName =
       LoadOp::getOperandSegmentSizesAttrName(result.name);
   result.addAttribute(
-      operand_segment_sizesAttrName,
+      operandSegmentSizesAttrName,
       parser.getBuilder().getDenseI32ArrayAttr({1, hasMask, hasOther}));
+
   return success();
 }
 
 void LoadOp::print(OpAsmPrinter &printer) {
   printer << " ";
   printer << getOperation()->getOperands();
-  // "operand_segment_sizes" can be deduced, so we don't print it.
+
+  // `operandSegmentSizes` can be deduced, so we don't print it.
   printer.printOptionalAttrDict(getOperation()->getAttrs(),
                                 {getOperandSegmentSizesAttrName()});
+
+  // `type(ptr) -> type(result)`
   printer << " : ";
+  // `type(ptr)` is optional during parsing, we only print for tensor pointers
+  if (isTensorPointerType(getPtr().getType())) {
+    printer.printStrippedAttrOrType(getPtr().getType());
+    printer << " -> ";
+  }
   printer.printStrippedAttrOrType(getResult().getType());
 }
 
 ParseResult StoreOp::parse(OpAsmParser &parser, OperationState &result) {
+  // Parse operands
   SmallVector<OpAsmParser::UnresolvedOperand, 4> allOperands;
-  Type valueType;
   SMLoc allOperandLoc = parser.getCurrentLocation();
   if (parser.parseOperandList(allOperands) ||
-      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon() ||
-      parser.parseCustomTypeWithFallback(valueType))
+      parser.parseOptionalAttrDict(result.attributes) || parser.parseColon())
     return failure();
 
+  // Operand types
   SmallVector<Type> operandTypes;
-  operandTypes.push_back(getPointerTypeSameShape(valueType)); // ptr
-  operandTypes.push_back(valueType);                          // value
+
+  // Parse `optional(type(ptr)), type(val)`
+  // Pointer type
+  Type ptrType, valType;
+  if (parser.parseType(valType))
+    return failure();
+  if (parser.parseOptionalComma().succeeded()) {
+    ptrType = valType;
+    if (parser.parseType(valType))
+      return failure();
+    operandTypes.push_back(ptrType);
+  } else {
+    operandTypes.push_back(getPointerTypeSameShape(valType));
+  }
+
+  // Value type
+  operandTypes.push_back(valType);
+
+  // Determine `mask`
   if (allOperands.size() >= 3)
-    operandTypes.push_back(getI1SameShape(valueType)); // mask
+    operandTypes.push_back(getI1SameShape(valType));
 
   if (parser.resolveOperands(allOperands, operandTypes, allOperandLoc,
                              result.operands))
@@ -107,7 +120,14 @@ void StoreOp::print(OpAsmPrinter &printer) {
   printer << " ";
   printer << getOperation()->getOperands();
   printer.printOptionalAttrDict(getOperation()->getAttrs(), /*elidedAttrs=*/{});
+
+  // `type(ptr), type(value)`
   printer << " : ";
+  // `type(ptr)` is optional during parsing, we only print for tensor pointers
+  if (isTensorPointerType(getPtr().getType())) {
+    printer.printStrippedAttrOrType(getPtr().getType());
+    printer << ", ";
+  }
   printer.printStrippedAttrOrType(getValue().getType());
 }
 
@@ -123,38 +143,6 @@ void StoreOp::print(OpAsmPrinter &printer) {
 namespace mlir {
 namespace triton {
 
-//-- FpToFpOp --
-bool FpToFpOp::areCastCompatible(::mlir::TypeRange inputs,
-                                 ::mlir::TypeRange outputs) {
-  if (inputs.size() != 1 || outputs.size() != 1)
-    return false;
-  auto srcEltType = inputs.front();
-  auto dstEltType = outputs.front();
-  auto srcTensorType = srcEltType.dyn_cast<mlir::RankedTensorType>();
-  auto dstTensorType = dstEltType.dyn_cast<mlir::RankedTensorType>();
-  if (srcTensorType && dstTensorType) {
-    srcEltType = srcTensorType.getElementType();
-    dstEltType = dstTensorType.getElementType();
-  }
-  // Check whether fp8 <=> fp16, bf16, f32, f64
-  // Make `srcEltType` always the fp8 side
-  if (dstEltType.dyn_cast<mlir::triton::Float8Type>())
-    std::swap(srcEltType, dstEltType);
-  if (!srcEltType.dyn_cast<mlir::triton::Float8Type>())
-    return false;
-  return dstEltType.isF16() || dstEltType.isBF16() || dstEltType.isF32() ||
-         dstEltType.isF64();
-}
-
-//-- StoreOp --
-void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
-                    ::mlir::Value ptr, ::mlir::Value value,
-                    ::mlir::triton::CacheModifier cache,
-                    ::mlir::triton::EvictionPolicy evict) {
-  return StoreOp::build(builder, state, ptr, value, mlir::Value(), cache,
-                        evict);
-}
-
 //-- LoadOp --
 static Type getLoadOpResultType(::mlir::OpBuilder &builder, Type ptrType) {
   auto ptrTensorType = ptrType.dyn_cast<RankedTensorType>();
@@ -169,24 +157,42 @@ static Type getLoadOpResultType(::mlir::OpBuilder &builder, Type ptrType) {
 void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
                    ::mlir::Value ptr, ::mlir::triton::CacheModifier cache,
                    ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  LoadOp::build(builder, state, ptr, mlir::Value(), mlir::Value(), cache, evict,
-                isVolatile);
+  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{},
+                /*boundaryCheck=*/{}, /*padding=*/{}, cache, evict, isVolatile);
+}
+
+void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+                   ::mlir::Value ptr, ArrayRef<int32_t> boundaryCheck,
+                   std::optional<::mlir::triton::PaddingOption> padding,
+                   ::mlir::triton::CacheModifier cache,
+                   ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
+  LoadOp::build(builder, state, ptr, /*mask=*/{}, /*other=*/{}, boundaryCheck,
+                padding, cache, evict, isVolatile);
 }
 
 void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
                    ::mlir::Value ptr, ::mlir::Value mask,
                    ::mlir::triton::CacheModifier cache,
                    ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  LoadOp::build(builder, state, ptr, mask, mlir::Value(), cache, evict,
-                isVolatile);
+  LoadOp::build(builder, state, ptr, mask, /*other=*/{}, /*boundaryCheck=*/{},
+                /*padding=*/{}, cache, evict, isVolatile);
 }
 
 void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
                    ::mlir::Value ptr, ::mlir::Value mask, ::mlir::Value other,
                    ::mlir::triton::CacheModifier cache,
                    ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
-  Type resultType = getLoadOpResultType(builder, ptr.getType());
+  LoadOp::build(builder, state, ptr, mask, other, /*boundaryCheck=*/{},
+                /*padding=*/{}, cache, evict, isVolatile);
+}
 
+void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+                   ::mlir::Value ptr, ::mlir::Value mask, ::mlir::Value other,
+                   std::optional<ArrayRef<int32_t>> boundaryCheck,
+                   std::optional<::mlir::triton::PaddingOption> padding,
+                   ::mlir::triton::CacheModifier cache,
+                   ::mlir::triton::EvictionPolicy evict, bool isVolatile) {
+  // Operands
   state.addOperands(ptr);
   if (mask) {
     state.addOperands(mask);
@@ -194,9 +200,20 @@ void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
       state.addOperands(other);
     }
   }
+
+  // Attributes
   state.addAttribute(
       getOperandSegmentSizesAttrName(state.name),
       builder.getDenseI32ArrayAttr({1, (mask ? 1 : 0), (other ? 1 : 0)}));
+  if (boundaryCheck.has_value()) {
+    state.addAttribute(getBoundaryCheckAttrName(state.name),
+                       builder.getDenseI32ArrayAttr(boundaryCheck.value()));
+  }
+  if (padding.has_value()) {
+    state.addAttribute(getPaddingAttrName(state.name),
+                       ::mlir::triton::PaddingOptionAttr::get(
+                           builder.getContext(), padding.value()));
+  }
   state.addAttribute(
       getCacheAttrName(state.name),
       ::mlir::triton::CacheModifierAttr::get(builder.getContext(), cache));
@@ -205,7 +222,37 @@ void LoadOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
       ::mlir::triton::EvictionPolicyAttr::get(builder.getContext(), evict));
   state.addAttribute(getIsVolatileAttrName(state.name),
                      builder.getBoolAttr(isVolatile));
+
+  // Result type
+  Type resultType = getLoadOpResultType(builder, ptr.getType());
   state.addTypes({resultType});
+}
+
+//-- StoreOp --
+void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+                    ::mlir::Value ptr, ::mlir::Value value,
+                    ::mlir::triton::CacheModifier cache,
+                    ::mlir::triton::EvictionPolicy evict) {
+  return StoreOp::build(builder, state, ptr, value, /*mask=*/{},
+                        /*boundaryCheck=*/{}, cache, evict);
+}
+
+void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+                    ::mlir::Value ptr, ::mlir::Value value, ::mlir::Value mask,
+                    ::mlir::triton::CacheModifier cache,
+                    ::mlir::triton::EvictionPolicy evict) {
+  return StoreOp::build(builder, state, ptr, value, mask, /*boundaryCheck=*/{},
+                        cache, evict);
+}
+
+void StoreOp::build(::mlir::OpBuilder &builder, ::mlir::OperationState &state,
+                    ::mlir::Value ptr, ::mlir::Value value,
+                    ArrayRef<int32_t> boundaryCheck,
+                    ::mlir::triton::CacheModifier cache,
+                    ::mlir::triton::EvictionPolicy evict) {
+  return StoreOp::build(builder, state, ptr, value, /*mask=*/{},
+                        builder.getDenseI32ArrayAttr(boundaryCheck), cache,
+                        evict);
 }
 
 //-- TransOp --
@@ -314,12 +361,11 @@ bool mlir::triton::ReduceOp::withIndex(mlir::triton::RedOp redOp) {
 
 //-- SplatOp --
 OpFoldResult SplatOp::fold(FoldAdaptor adaptor) {
-  auto constOperand = getSrc().getDefiningOp<arith::ConstantOp>();
-  if (!constOperand)
+  auto value = adaptor.getSrc();
+  if (!value)
     return {};
   auto shapedType = getType().cast<ShapedType>();
-  auto ret = SplatElementsAttr::get(
-      shapedType, ArrayRef<Attribute>(constOperand.getValue()));
+  auto ret = SplatElementsAttr::get(shapedType, ArrayRef<Attribute>(value));
   return ret;
 }
 
@@ -352,24 +398,122 @@ mlir::LogicalResult mlir::triton::ExpandDimsOp::inferReturnTypes(
   return mlir::success();
 }
 
-//-- BroadcastOp --
-OpFoldResult BroadcastOp::fold(FoldAdaptor adaptor) {
-  auto constOperand = getSrc().getDefiningOp<arith::ConstantOp>();
-  if (!constOperand)
+LogicalResult ExpandDimsOp::canonicalize(ExpandDimsOp op,
+                                         PatternRewriter &rewriter) {
+  auto definingOp = op.getOperand().getDefiningOp();
+  if (!definingOp) {
+    return mlir::failure();
+  }
+  // expand_dims(splat) -> splat
+  if (auto splat = dyn_cast<triton::SplatOp>(definingOp)) {
+    rewriter.replaceOpWithNewOp<triton::SplatOp>(op, op.getType(),
+                                                 splat.getOperand());
+    return mlir::success();
+  }
+  return mlir::failure();
+}
+
+template <typename ViewLikeOp>
+static OpFoldResult foldViewLikeOp(ViewLikeOp op, Attribute value) {
+  if (!value)
     return {};
 
-  auto shapedType = getType().cast<ShapedType>();
-  auto value = constOperand.getValue();
+  auto shapedType = op.getType().template cast<mlir::ShapedType>();
   if (auto denseElemsAttr = value.dyn_cast<DenseElementsAttr>()) {
-    if (!denseElemsAttr.isSplat())
-      return {};
-    return SplatElementsAttr::get(shapedType,
-                                  denseElemsAttr.getSplatValue<Attribute>());
-  } else if (value.getType().isIntOrIndexOrFloat()) {
-    return SplatElementsAttr::get(shapedType, value);
-  } else {
-    return {};
+    if (denseElemsAttr.isSplat()) {
+      return denseElemsAttr.resizeSplat(shapedType);
+    } else {
+      return denseElemsAttr.reshape(shapedType);
+    }
   }
+  return {};
+}
+
+OpFoldResult ExpandDimsOp::fold(FoldAdaptor adaptor) {
+  return foldViewLikeOp(*this, adaptor.getSrc());
+}
+
+//-- ViewOp --
+template <typename OpType>
+LogicalResult canonicalizeViewOrBroadcast(OpType op,
+                                          PatternRewriter &rewriter) {
+  auto definingOp = op.getOperand().getDefiningOp();
+  if (!definingOp) {
+    return mlir::failure();
+  }
+
+  // view(view) -> view
+  if (auto parent_view = dyn_cast<OpType>(definingOp)) {
+    rewriter.replaceOpWithNewOp<OpType>(op, op.getType(),
+                                        parent_view.getOperand());
+    return mlir::success();
+  }
+
+  // view(splat) -> splat
+  if (auto splat = dyn_cast<triton::SplatOp>(definingOp)) {
+    rewriter.replaceOpWithNewOp<triton::SplatOp>(op, op.getType(),
+                                                 splat.getOperand());
+    return mlir::success();
+  }
+
+  return mlir::failure();
+}
+LogicalResult ViewOp::canonicalize(ViewOp op, PatternRewriter &rewriter) {
+  return canonicalizeViewOrBroadcast(op, rewriter);
+}
+
+OpFoldResult ViewOp::fold(FoldAdaptor adaptor) {
+  if (getType() == getOperand().getType()) {
+    // no-op
+    return getOperand();
+  }
+
+  return foldViewLikeOp(*this, adaptor.getSrc());
+}
+
+//-- BroadcastOp --
+LogicalResult BroadcastOp::canonicalize(BroadcastOp op,
+                                        PatternRewriter &rewriter) {
+  return canonicalizeViewOrBroadcast(op, rewriter);
+}
+
+OpFoldResult BroadcastOp::fold(FoldAdaptor adaptor) {
+  if (getType() == getOperand().getType()) {
+    // no-op
+    return getOperand();
+  }
+
+  auto value = adaptor.getSrc();
+  if (!value)
+    return {};
+
+  if (auto denseElemsAttr = value.dyn_cast<SplatElementsAttr>()) {
+    auto shapedType = getType().cast<ShapedType>();
+    return denseElemsAttr.resizeSplat(shapedType);
+  }
+  return {};
+}
+
+//-- MakeTensorPtrOp --
+void MakeTensorPtrOp::build(::mlir::OpBuilder &builder,
+                            ::mlir::OperationState &state, ::mlir::Value base,
+                            ::mlir::ValueRange shape,
+                            ::mlir::ValueRange strides,
+                            ::mlir::ValueRange offsets,
+                            ArrayRef<int32_t> tensorShape,
+                            ArrayRef<int32_t> order) {
+  // Get pointer type from `base`
+  auto pointerType = base.getType().cast<PointerType>();
+  assert(pointerType != nullptr);
+
+  // Build type `tt.ptr<tensor<tensorShape, base.pointeeType>>`
+  auto tensorType = RankedTensorType::get(
+      SmallVector<int64_t>(tensorShape.begin(), tensorShape.end()),
+      pointerType.getPointeeType());
+  auto result = PointerType::get(tensorType, 1);
+
+  return build(builder, state, result, base, shape, strides, offsets,
+               builder.getDenseI32ArrayAttr(order));
 }
 
 } // namespace triton

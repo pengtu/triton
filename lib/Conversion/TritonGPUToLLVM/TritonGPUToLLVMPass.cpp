@@ -4,13 +4,18 @@
 #include "mlir/Analysis/DataFlowFramework.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
 #include "mlir/Conversion/ControlFlowToLLVM//ControlFlowToLLVM.h"
-// #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
+#include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 #include "mlir/Conversion/GPUToSPIRV/GPUToSPIRVPass.h"
 #include "mlir/Conversion/GPUToSPIRV/GPUToSPIRV.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/SCFToControlFlow/SCFToControlFlow.h"
+#include "mlir/Dialect/Index/IR/IndexDialect.h"
+#include "mlir/Dialect/Index/IR/IndexOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
-// #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 
 #include "mlir/Dialect/SPIRV/Transforms/SPIRVConversion.h"
 #include "mlir/Conversion/SPIRVToLLVM/SPIRVToLLVM.h"
@@ -20,6 +25,7 @@
 #include "triton/Analysis/Membar.h"
 #include "triton/Dialect/Triton/IR/Dialect.h"
 #include "triton/Dialect/TritonGPU/IR/Dialect.h"
+#include "triton/Tools/Sys/GetPlatform.hpp"
 
 #include "ConvertLayoutOpToLLVM.h"
 #include "DotOpToLLVM.h"
@@ -30,42 +36,87 @@
 #include "TypeConverter.h"
 #include "ViewOpToLLVM.h"
 
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+
 using namespace mlir;
 using namespace mlir::triton;
 
 #define GEN_PASS_CLASSES
-#include "triton/Conversion/Passes.h.inc"
+#include "triton/Conversion/TritonGPUToLLVM/Passes.h.inc"
 
-namespace mlir {
-
-class TritonLLVMConversionTarget : public ConversionTarget {
-public:
-  explicit TritonLLVMConversionTarget(MLIRContext &ctx)
-      : ConversionTarget(ctx) {
-    addLegalDialect<LLVM::LLVMDialect>();
-//    addIllegalDialect<NVVM::NVVMDialect>();
-    addIllegalDialect<mlir::spirv::SPIRVDialect>();
-    addIllegalDialect<triton::TritonDialect>();
-    addIllegalDialect<triton::gpu::TritonGPUDialect>();
-    addIllegalDialect<mlir::gpu::GPUDialect>();
-    addLegalOp<mlir::UnrealizedConversionCastOp>();
-  }
-};
+namespace {
 
 class TritonLLVMFunctionConversionTarget : public ConversionTarget {
 public:
-  explicit TritonLLVMFunctionConversionTarget(MLIRContext &ctx)
+  explicit TritonLLVMFunctionConversionTarget(MLIRContext &ctx, bool isROCM, bool isSPIRV)
       : ConversionTarget(ctx) {
+    addLegalDialect<index::IndexDialect>();
     addLegalDialect<LLVM::LLVMDialect>();
-//    addLegalDialect<NVVM::NVVMDialect>();
+    if (isROCM) {
+      addLegalDialect<ROCDL::ROCDLDialect>();
+    } else if (isSPIRV) {
+      addLegalDialect<mlir::spirv::SPIRVDialect>();
+    } else {
+      addLegalDialect<NVVM::NVVMDialect>();
+    }
     addIllegalOp<mlir::func::FuncOp>();
     addLegalOp<mlir::UnrealizedConversionCastOp>();
   }
 };
 
-} // namespace mlir
+class TritonPTXConversionTarget : public ConversionTarget {
+public:
+  explicit TritonPTXConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
+    addDynamicallyLegalDialect<LLVM::LLVMDialect>(
+        [&](Operation *op) { return isLegalElementwiseOp(op); });
 
-namespace {
+    addLegalDialect<NVVM::NVVMDialect>();
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+  }
+};
+
+class TritonGCNConversionTarget : public ConversionTarget {
+public:
+  explicit TritonGCNConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
+    addDynamicallyLegalDialect<LLVM::LLVMDialect>(
+        [&](Operation *op) { return isLegalElementwiseOp(op); });
+
+    addLegalDialect<ROCDL::ROCDLDialect>();
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+  }
+};
+
+class TritonSPIRVConversionTarget : public ConversionTarget {
+public:
+  explicit TritonSPIRVConversionTarget(MLIRContext &ctx) : ConversionTarget(ctx) {
+    addDynamicallyLegalDialect<LLVM::LLVMDialect>(
+        [&](Operation *op) { return isLegalElementwiseOp(op); });
+
+    addLegalDialect<spirv::SPIRVDialect>();
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+  }
+};
+
+struct ReturnOpConversion : public ConvertOpToLLVMPattern<func::ReturnOp> {
+  using ConvertOpToLLVMPattern<func::ReturnOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(func::ReturnOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    unsigned numArguments = op.getNumOperands();
+
+    // Currently, Triton kernel function always return nothing.
+    // TODO(Superjomn) add support for non-inline device function
+    if (numArguments > 0) {
+      return rewriter.notifyMatchFailure(
+          op, "Only kernel function with nothing returned is supported.");
+    }
+
+    rewriter.replaceOpWithNewOp<LLVM::ReturnOp>(op, TypeRange(), ValueRange(),
+                                                op->getAttrs());
+    return success();
+  }
+};
 
 /// FuncOp legalization pattern that converts MemRef arguments to pointers to
 /// MemRef descriptors (LLVM struct data types) containing all the MemRef type
@@ -79,8 +130,9 @@ struct FuncOpConversion : public FuncOpConversionBase {
   matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto newFuncOp = convertFuncOpToLLVMFuncOp(funcOp, rewriter);
-    if (!newFuncOp)
+    if (!newFuncOp) {
       return failure();
+    }
 
     auto ctx = funcOp->getContext();
 #if 0
@@ -100,69 +152,68 @@ private:
   int numWarps{0};
 };
 
+class TritonLLVMConversionTarget : public ConversionTarget {
+public:
+  explicit TritonLLVMConversionTarget(MLIRContext &ctx, bool isROCM, bool isSPIRV)
+      : ConversionTarget(ctx) {
+    addLegalDialect<LLVM::LLVMDialect>();
+    if (isROCM) {
+      addLegalDialect<ROCDL::ROCDLDialect>();
+    } else if (isSPIRV) {
+      addLegalDialect<spirv::SPIRVDialect>();
+    } else {
+      addLegalDialect<NVVM::NVVMDialect>();
+    }
+    addIllegalDialect<triton::TritonDialect>();
+    addIllegalDialect<triton::gpu::TritonGPUDialect>();
+    addIllegalDialect<mlir::gpu::GPUDialect>();
+    addLegalOp<mlir::UnrealizedConversionCastOp>();
+  }
+};
+
 class ConvertTritonGPUToLLVM
     : public ConvertTritonGPUToLLVMBase<ConvertTritonGPUToLLVM> {
 
 public:
-  explicit ConvertTritonGPUToLLVM(int computeCapability)
-      : computeCapability(computeCapability) {}
+  explicit ConvertTritonGPUToLLVM(int computeCapability, bool isROCM, bool isSPIRV)
+      : computeCapability(computeCapability), isROCM(isROCM), isSPIRV(isSPIRV) {}
 
   void runOnOperation() override {
     MLIRContext *context = &getContext();
     ModuleOp mod = getOperation();
-
     mlir::LowerToLLVMOptions option(context);
     option.overrideIndexBitwidth(32);
     TritonGPUToLLVMTypeConverter typeConverter(context, option);
-    TritonLLVMFunctionConversionTarget funcTarget(*context);
-    TritonLLVMConversionTarget target(*context);
-
+    TritonLLVMConversionTarget target(*context, isROCM, isSPIRV);
     int numWarps = triton::gpu::TritonGPUDialect::getNumWarps(mod);
 
-    // Step 1: Decompose unoptimized layout conversions to use shared memory
-    // Step 2: Decompose insert_slice_async to use load + insert_slice for
-    //   pre-Ampere architectures or unsupported vectorized load sizes
-    // Step 3: Convert SCF to CFG
-    // Step 4: Allocate shared memories and insert barriers
-    // Step 5: Convert FuncOp to LLVMFuncOp via partial conversion
-    // Step 6: Get axis and shared memory info
-    // Step 7: Convert the rest of ops via partial conversion
-    //
-    // The reason for a separation between 5/7 is that, step 6 is out of the
-    // scope of Dialect Conversion, thus we need to make sure the smem is not
-    // revised during the conversion of step 7.
-
-    // Step 1
+    /* preprocess */
     decomposeMmaToDotOperand(mod, numWarps);
     decomposeBlockedToDotOperand(mod);
-
-    // Step 2
     if (failed(decomposeInsertSliceAsyncOp(mod)))
       return signalPassFailure();
 
-    // Step 3
-    RewritePatternSet scfPatterns(context);
-    mlir::populateSCFToControlFlowConversionPatterns(scfPatterns);
-    mlir::ConversionTarget scfTarget(*context);
-    scfTarget.addIllegalOp<scf::ForOp, scf::IfOp, scf::ParallelOp, scf::WhileOp,
-                           scf::ExecuteRegionOp>();
-    scfTarget.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
-    if (failed(applyPartialConversion(mod, scfTarget, std::move(scfPatterns))))
-      return signalPassFailure();
-
-    // Step 4
+    /* allocate shared memory and set barrier */
     Allocation allocation(mod);
     MembarAnalysis membarPass(&allocation);
     membarPass.run();
 
-    // Step 5
-    RewritePatternSet funcPatterns(context);
-    funcPatterns.add<FuncOpConversion>(typeConverter, numWarps, /*benefit=*/1);
-    if (failed(
-            applyPartialConversion(mod, funcTarget, std::move(funcPatterns))))
-      return signalPassFailure();
+    /* lower functions */
+    {
+      mlir::LowerToLLVMOptions option(context);
+      TritonGPUToLLVMTypeConverter typeConverter(context, option);
+      TritonLLVMFunctionConversionTarget funcTarget(*context, isROCM, isSPIRV);
+      RewritePatternSet funcPatterns(context);
+      funcPatterns.add<FuncOpConversion>(typeConverter, numWarps,
+                                         /*benefit=*/1);
+      funcPatterns.add<ReturnOpConversion>(typeConverter);
+      mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
+                                                            funcPatterns);
+      if (failed(
+              applyPartialConversion(mod, funcTarget, std::move(funcPatterns))))
+        return signalPassFailure();
+    }
 
-    // Step 6 - get axis and shared memory info
     std::unique_ptr<DataFlowSolver> solver = createDataFlowSolver();
     AxisInfoAnalysis *axisInfoAnalysis = solver->load<AxisInfoAnalysis>();
     if (failed(solver->initializeAndRun(mod)))
@@ -172,72 +223,83 @@ public:
                  mlir::IntegerAttr::get(mlir::IntegerType::get(context, 32),
                                         allocation.getSharedMemorySize()));
 
-    // Step 7 - rewrite rest of ops
-    // We set a higher benefit here to ensure triton's patterns runs before
-    // arith patterns for some encoding not supported by the community
-    // patterns.
+    /* rewrite ops */
+    RewritePatternSet patterns(context);
+    // TritonGPU lowering patterns
     OpBuilder::InsertPoint indexInsertPoint;
     ConvertTritonGPUOpToLLVMPatternBase::IndexCacheInfo indexCacheInfo{
         &baseIndexCache, &indexCache, &indexInsertPoint};
+    auto populatePatterns1 = [&](auto populateFunc) {
+      populateFunc(typeConverter, patterns, numWarps, *axisInfoAnalysis,
+                   &allocation, smem, indexCacheInfo, /*benefit*/ 1);
+    };
+    auto populatePatterns2 = [&](auto populateFunc) {
+      populateFunc(typeConverter, patterns, numWarps, *axisInfoAnalysis,
+                   &allocation, smem, /*benefit*/ 1);
+    };
+    populatePatterns1(populateTritonGPUToLLVMPatterns);
+    populatePatterns1(populateConvertLayoutOpToLLVMPatterns);
+    populatePatterns2(populateDotOpToLLVMPatterns);
+    populatePatterns2(populateElementwiseOpToLLVMPatterns);
+    populatePatterns1(populateLoadStoreOpToLLVMPatterns);
+    populatePatterns1(populateReduceOpToLLVMPatterns);
+    populatePatterns2(populateViewOpToLLVMPatterns);
 
-    RewritePatternSet patterns(context);
+    // Native lowering patterns
+    if (isROCM) {
+      mlir::populateGpuToROCDLConversionPatterns(typeConverter, patterns,
+                                                 mlir::gpu::amd::HIP);
+    } else if (isSPIRV) {
+      auto triple = spirv::VerCapExtAttr::get(
+          spirv::Version::V_1_0, {spirv::Capability::Kernel},
+          ArrayRef<spirv::Extension>(), context);
+      auto targetAttr = spirv::TargetEnvAttr::get(
+          triple, spirv::getDefaultResourceLimits(context),
+          spirv::ClientAPI::Unknown, spirv::Vendor::Unknown,
+          spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
+      SPIRVConversionOptions options;
+      SPIRVTypeConverter spirvTypeConverter(targetAttr, options);
+      mlir::populateGPUToSPIRVPatterns(spirvTypeConverter, patterns);
+      mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
+      mlir::populateSPIRVToLLVMConversionPatterns(typeConverter, patterns);
+    } else {
+      mlir::populateGpuToNVVMConversionPatterns(typeConverter, patterns);
+    }
 
-    // Normal conversions
-    populateTritonGPUToLLVMPatterns(typeConverter, patterns, numWarps,
-                                    *axisInfoAnalysis, &allocation, smem,
-                                    indexCacheInfo, /*benefit=*/10);
-    // ConvertLayoutOp
-    populateConvertLayoutOpToLLVMPatterns(typeConverter, patterns, numWarps,
-                                          *axisInfoAnalysis, &allocation, smem,
-                                          indexCacheInfo, /*benefit=*/10);
-    // DotOp
-    populateDotOpToLLVMPatterns(typeConverter, patterns, numWarps,
-                                *axisInfoAnalysis, &allocation, smem,
-                                /*benefit=*/10);
-    // ElementwiseOp
-    populateElementwiseOpToLLVMPatterns(typeConverter, patterns, numWarps,
-                                        *axisInfoAnalysis, &allocation, smem,
-                                        /*benefit=*/10);
-    // LoadStoreOp
-    populateLoadStoreOpToLLVMPatterns(typeConverter, patterns, numWarps,
-                                      *axisInfoAnalysis, &allocation, smem,
-                                      indexCacheInfo, /*benefit=*/10);
-    // ReduceOp
-    populateReduceOpToLLVMPatterns(typeConverter, patterns, numWarps,
-                                   *axisInfoAnalysis, &allocation, smem,
-                                   indexCacheInfo, /*benefit=*/10);
-    // ViewOp
-    populateViewOpToLLVMPatterns(typeConverter, patterns, numWarps,
-                                 *axisInfoAnalysis, &allocation, smem,
-                                 /*benefit=*/10);
-
-    // Add arith/math's patterns to help convert scalar expression to LLVM.
-    mlir::arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
-    mlir::populateMathToLLVMConversionPatterns(typeConverter, patterns);
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
-//    mlir::populateGpuToNVVMConversionPatterns(typeConverter, patterns);
-    auto triple = spirv::VerCapExtAttr::get(spirv::Version::V_1_0,
-                                          {spirv::Capability::Kernel},
-                                          ArrayRef<spirv::Extension>(), context);
-    auto targetAttr = spirv::TargetEnvAttr::get(
-      triple, spirv::getDefaultResourceLimits(context),
-      spirv::ClientAPI::Unknown, spirv::Vendor::Unknown,
-      spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
-    SPIRVConversionOptions options;
-    SPIRVTypeConverter spirvTypeConverter(targetAttr, options);
-    mlir::populateGPUToSPIRVPatterns(spirvTypeConverter, patterns);
-    mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
-    mlir::populateSPIRVToLLVMConversionPatterns(typeConverter, patterns);
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();
+
+    if (isROCM) {
+      TritonGCNConversionTarget gcnTarget(*context);
+      RewritePatternSet gcnPatterns(context);
+      populateElementwiseOpToPTXPatterns(typeConverter, gcnPatterns,
+                                         /*benefits=*/10);
+      if (failed(
+              applyPartialConversion(mod, gcnTarget, std::move(gcnPatterns))))
+        return signalPassFailure();
+    } else if (!isSPIRV) {
+      // Use our custom converters to convert some operations to PTX to avoid
+      // using NVPTX for two reasons:
+      // 1. NVPTX backend is flaky on data types like float16 and bfloat16
+      // 2. In some cases, we may generate faster PTX code than NVPTX backend
+      TritonPTXConversionTarget ptxTarget(*context);
+      RewritePatternSet ptxPatterns(context);
+      // Add patterns to convert LLVM to PTX
+      populateElementwiseOpToPTXPatterns(typeConverter, ptxPatterns,
+                                         /*benefits=*/10);
+      if (failed(
+              applyPartialConversion(mod, ptxTarget, std::move(ptxPatterns))))
+        return signalPassFailure();
+    }
   }
 
 private:
   Value smem;
 
-  using IndexCacheKeyT = std::pair<Attribute, SmallVector<int64_t>>;
+  using IndexCacheKeyT = std::pair<Attribute, RankedTensorType>;
   DenseMap<IndexCacheKeyT, SmallVector<Value>, CacheKeyDenseMapInfo>
       baseIndexCache;
   DenseMap<IndexCacheKeyT, SmallVector<SmallVector<Value>>,
@@ -245,6 +307,8 @@ private:
       indexCache;
 
   int computeCapability{};
+  bool isROCM{};
+  bool isSPIRV{};
 
   void initSharedMemory(size_t size,
                         TritonGPUToLLVMTypeConverter &typeConverter) {
@@ -386,6 +450,8 @@ private:
       auto loadOp = builder.create<triton::LoadOp>(
           insertSliceAsyncOp.getLoc(), tmpTy, insertSliceAsyncOp.getSrc(),
           insertSliceAsyncOp.getMask(), insertSliceAsyncOp.getOther(),
+          // TODO(Chenggang): confirm `boundaryCheck` and `padding`
+          /*boundaryCheck=*/nullptr, /*padding=*/nullptr,
           insertSliceAsyncOp.getCache(), insertSliceAsyncOp.getEvict(),
           insertSliceAsyncOp.getIsVolatile());
 
@@ -436,8 +502,8 @@ namespace mlir {
 namespace triton {
 
 std::unique_ptr<OperationPass<ModuleOp>>
-createConvertTritonGPUToLLVMPass(int computeCapability) {
-  return std::make_unique<::ConvertTritonGPUToLLVM>(computeCapability);
+createConvertTritonGPUToLLVMPass(int computeCapability, bool isROCM, bool isSPIRV) {
+  return std::make_unique<::ConvertTritonGPUToLLVM>(computeCapability, isROCM, isSPIRV);
 }
 
 } // namespace triton

@@ -164,16 +164,16 @@ public:
   }
 };
 
-class ConstantOpAxisInfoVisitor final
-    : public AxisInfoVisitorImpl<arith::ConstantOp> {
+template <typename OpTy>
+class ConstantOpAxisInfoVisitor final : public AxisInfoVisitorImpl<OpTy> {
 public:
-  using AxisInfoVisitorImpl<arith::ConstantOp>::AxisInfoVisitorImpl;
+  using AxisInfoVisitorImpl<OpTy>::AxisInfoVisitorImpl;
 
   AxisInfo
-  getAxisInfo(arith::ConstantOp op,
+  getAxisInfo(OpTy op,
               ArrayRef<const dataflow::Lattice<AxisInfo> *> operands) override {
-    auto intAttr = op.getValue().dyn_cast<IntegerAttr>();
-    auto boolAttr = op.getValue().dyn_cast<BoolAttr>();
+    auto intAttr = op.getValue().template dyn_cast<IntegerAttr>();
+    auto boolAttr = op.getValue().template dyn_cast<BoolAttr>();
     if (intAttr || boolAttr) {
       int64_t value{};
       if (intAttr)
@@ -186,10 +186,10 @@ public:
                       /*knownConstantValue=*/{value});
     }
     // TODO: generalize to dense attr
-    auto splatAttr = op.getValue().dyn_cast<SplatElementsAttr>();
+    auto splatAttr = op.getValue().template dyn_cast<SplatElementsAttr>();
     if (splatAttr && splatAttr.getElementType().isIntOrIndex()) {
-      int64_t value = splatAttr.getSplatValue<APInt>().getZExtValue();
-      TensorType ty = splatAttr.getType().cast<TensorType>();
+      int64_t value = splatAttr.template getSplatValue<APInt>().getZExtValue();
+      TensorType ty = splatAttr.getType().template cast<TensorType>();
       return AxisInfo(
           /*contiguity=*/AxisInfo::DimVectorT(ty.getRank(), 1),
           /*divisibility=*/
@@ -220,7 +220,16 @@ private:
     // rhs = p * d_rhs = p * p' * gcd(d_lhs, d_rhs)
     // lhs + rhs = k * d_lhs + p * d_rhs = (k * d_lhs + p * d_rhs) *
     // gcd(d_lhs, d_rhs)
-    return gcd(lhs.getDivisibility(dim), rhs.getDivisibility(dim));
+    auto elemSize = 1;
+    if constexpr (std::is_same_v<OpTy, triton::AddPtrOp>) {
+      //  %ptr = addptr %lhs, %rhs
+      // is equivalent to
+      //  %0 = mul %lhs, %elemSize
+      //  %ptr = add %0, %rhs
+      elemSize = std::max<unsigned int>(
+          1, triton::getPointeeBitWidth(op.getPtr().getType()) / 8);
+    }
+    return gcd(lhs.getDivisibility(dim), rhs.getDivisibility(dim) * elemSize);
   }
 
   int64_t getConstancy(OpTy op, const AxisInfo &lhs, const AxisInfo &rhs,
@@ -233,7 +242,8 @@ private:
     if (lhs.getConstantValue().has_value() &&
         rhs.getConstantValue().has_value()) {
       if constexpr (std::is_same_v<OpTy, arith::AddIOp> ||
-                    std::is_same_v<OpTy, triton::AddPtrOp>) {
+                    std::is_same_v<OpTy, triton::AddPtrOp> ||
+                    std::is_same_v<OpTy, LLVM::AddOp>) {
         return {lhs.getConstantValue().value() +
                 rhs.getConstantValue().value()};
       } else if constexpr (std::is_same_v<OpTy, arith::SubIOp>) {
@@ -334,14 +344,11 @@ private:
     if (lhs.getConstantValue().has_value() &&
         lhs.getConstantValue().value() == 0)
       return lhs.getDivisibility(dim);
-    // Case 2: rhs is constant
-    if (rhs.getConstantValue().has_value()) {
-      auto lhsDivisibility = lhs.getDivisibility(dim);
-      auto rhsValue = rhs.getConstantValue().value();
-      if (lhsDivisibility % rhsValue == 0)
-        return lhsDivisibility / rhsValue;
-    }
-    // Case 3: both are not constant
+    // Case 2: rhs is 1
+    if (rhs.getConstantValue().has_value() &&
+        rhs.getConstantValue().value() == 1)
+      return lhs.getDivisibility(dim);
+    // otherwise: return 1
     return 1;
   }
 
@@ -815,11 +822,15 @@ AxisInfoAnalysis::AxisInfoAnalysis(DataFlowSolver &solver)
                   CastOpAxisInfoVisitor<triton::gpu::ConvertLayoutOp>,
                   CastOpAxisInfoVisitor<mlir::UnrealizedConversionCastOp>,
                   CastOpAxisInfoVisitor<triton::BitcastOp>>();
+  // TODO: Remove rules for LLVM::ConstantOp, LLVM::AddOp
+  // when scf.for supports integers induction variable
   visitors.append<MakeRangeOpAxisInfoVisitor>();
-  visitors.append<ConstantOpAxisInfoVisitor>();
+  visitors.append<ConstantOpAxisInfoVisitor<arith::ConstantOp>,
+                  ConstantOpAxisInfoVisitor<LLVM::ConstantOp>>();
   visitors.append<AddSubOpAxisInfoVisitor<triton::AddPtrOp>,
                   AddSubOpAxisInfoVisitor<arith::AddIOp>,
-                  AddSubOpAxisInfoVisitor<arith::SubIOp>>();
+                  AddSubOpAxisInfoVisitor<arith::SubIOp>,
+                  AddSubOpAxisInfoVisitor<LLVM::AddOp>>();
   visitors.append<MulIOpAxisInfoVisitor>();
   visitors.append<DivOpAxisInfoVisitor<arith::DivSIOp>,
                   DivOpAxisInfoVisitor<arith::DivUIOp>>();
@@ -846,10 +857,14 @@ AxisInfoAnalysis::AxisInfoAnalysis(DataFlowSolver &solver)
 void AxisInfoAnalysis::visitOperation(
     Operation *op, ArrayRef<const dataflow::Lattice<AxisInfo> *> operands,
     ArrayRef<dataflow::Lattice<AxisInfo> *> results) {
+  // TODO: For sure not the right way to do this
+  // but why is scf.if not initialized otherwise?
+  for (auto op : operands)
+    if (op->getValue().getRank() == 0)
+      setToEntryState((dataflow::Lattice<AxisInfo> *)op);
   AxisInfo curr = visitors.apply(op, operands);
-  if (curr.getRank() == 0) {
+  if (curr.getRank() == 0)
     return setAllToEntryStates(results);
-  }
   // override with hint
   auto newContiguity = curr.getContiguity();
   auto newDivisibility = curr.getDivisibility();
@@ -904,7 +919,7 @@ unsigned AxisInfoAnalysis::getPtrAlignment(Value ptr) {
   auto order = triton::gpu::getOrder(layout);
   auto maxMultipleBytes = axisInfo.getDivisibility(order[0]);
   auto maxContig = axisInfo.getContiguity(order[0]);
-  auto elemNumBits = getPointeeBitWidth(tensorTy);
+  auto elemNumBits = triton::getPointeeBitWidth(tensorTy);
   auto elemNumBytes = std::max<unsigned>(elemNumBits / 8, 1);
   auto maxMultiple = std::max<int64_t>(maxMultipleBytes / elemNumBytes, 1);
   unsigned alignment = std::min(maxMultiple, maxContig);

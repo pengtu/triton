@@ -1,3 +1,4 @@
 add_subdirectory(LLVMIR)
 add_subdirectory(PTX)
 add_subdirectory(SPIRV)
+add_subdirectory(HSACO)

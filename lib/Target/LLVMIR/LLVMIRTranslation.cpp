@@ -9,14 +9,17 @@
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
+#include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/LLVMTranslationInterface.h"
 #include "mlir/Transforms/Passes.h"
 #include "triton/Conversion/TritonGPUToLLVM/TritonGPUToLLVMPass.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
+#include "triton/Tools/Sys/GetPlatform.hpp"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/IR/CallingConv.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Linker/Linker.h"
@@ -37,7 +40,8 @@ struct NVVMMetadata {
 };
 
 // Add the nvvm related metadata to LLVM IR.
-static void amendLLVMFunc(llvm::Function *func, const NVVMMetadata &metadata) {
+static void amendLLVMFunc(llvm::Function *func, const NVVMMetadata &metadata,
+                          bool isROCM, bool isSPIRV) {
   auto *module = func->getParent();
   auto &ctx = func->getContext();
 
@@ -67,12 +71,19 @@ static void amendLLVMFunc(llvm::Function *func, const NVVMMetadata &metadata) {
   }
 
   if (metadata.isKernel) {
-    llvm::Metadata *mdArgs[] = {
-        llvm::ValueAsMetadata::get(func), llvm::MDString::get(ctx, "kernel"),
-        llvm::ValueAsMetadata::get(
-            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1))};
-    module->getOrInsertNamedMetadata("nvvm.annotations")
-        ->addOperand(llvm::MDNode::get(ctx, mdArgs));
+    if (isROCM) {
+      func->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
+      func->addFnAttr("amdgpu-flat-work-group-size", "1, 1024");
+    } else if (isSPIRV) {
+      ; // TODO
+    } else {
+      llvm::Metadata *mdArgs[] = {
+          llvm::ValueAsMetadata::get(func), llvm::MDString::get(ctx, "kernel"),
+          llvm::ValueAsMetadata::get(
+              llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1))};
+      module->getOrInsertNamedMetadata("nvvm.annotations")
+          ->addOperand(llvm::MDNode::get(ctx, mdArgs));
+    }
   }
 }
 
@@ -201,7 +212,7 @@ static void linkLibdevice(llvm::Module &module) {
 }
 
 static bool linkExternLib(llvm::Module &module, llvm::StringRef name,
-                          llvm::StringRef path) {
+                          llvm::StringRef path, bool isROCM, bool isSPIRV) {
   llvm::SMDiagnostic err;
   auto &ctx = module.getContext();
 
@@ -220,19 +231,24 @@ static bool linkExternLib(llvm::Module &module, llvm::StringRef name,
     return true;
   }
 
-  if (name == "libdevice") {
-    linkLibdevice(module);
-  } else {
-    assert(false && "unknown extern lib: ");
+  // check if ROCM
+  if (!isROCM && !isSPIRV) {
+    if (name == "libdevice") {
+      linkLibdevice(module);
+    } else {
+      assert(false && "unknown extern lib: ");
+    }
   }
 
   return false;
 }
 
 std::unique_ptr<llvm::Module>
-translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module) {
+translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module,
+                      bool isROCM, bool isSPIRV) {
   DialectRegistry registry;
   mlir::registerLLVMDialectTranslation(registry);
+  mlir::registerROCDLDialectTranslation(registry);
   mlir::registerNVVMDialectTranslation(registry);
   module->getContext()->appendDialectRegistry(registry);
 
@@ -255,7 +271,7 @@ translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module) {
   // dead code.
   auto externLibs = getExternLibs(module);
   for (auto &lib : externLibs) {
-    if (linkExternLib(*llvmModule, lib.first, lib.second))
+    if (linkExternLib(*llvmModule, lib.first, lib.second, isROCM, isSPIRV))
       return nullptr;
   }
 
@@ -271,7 +287,7 @@ translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module) {
   for (auto &func : llvmModule->functions()) {
     auto it = nvvmMetadata.find(func.getName());
     if (it != nvvmMetadata.end())
-      amendLLVMFunc(&func, it->second);
+      amendLLVMFunc(&func, it->second, isROCM, isSPIRV);
   }
 
   return llvmModule;
@@ -279,7 +295,8 @@ translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module) {
 
 std::unique_ptr<llvm::Module>
 translateTritonGPUToLLVMIR(llvm::LLVMContext *llvmContext,
-                           mlir::ModuleOp module, int computeCapability) {
+                           mlir::ModuleOp module, int computeCapability,
+                           bool isROCM, bool isSPIRV) {
   mlir::PassManager pm(module->getContext());
   applyPassManagerCLOptions(pm);
   auto printingFlags = mlir::OpPrintingFlags();
@@ -294,23 +311,35 @@ translateTritonGPUToLLVMIR(llvm::LLVMContext *llvmContext,
       /*printAfterOnlyOnChange=*/true,
       /*printAfterOnlyOnFailure*/ false, llvm::dbgs(), printingFlags);
 
-  pm.addPass(createConvertTritonGPUToLLVMPass(computeCapability));
-  // Canonicalize to eliminate the remaining UnrealizedConversionCastOp
+  pm.addPass(mlir::createConvertSCFToCFPass());
+  pm.addPass(mlir::createConvertIndexToLLVMPass());
+  pm.addPass(createConvertTritonGPUToLLVMPass(computeCapability, isROCM, isSPIRV));
+  pm.addPass(mlir::createArithToLLVMConversionPass());
   pm.addPass(mlir::createCanonicalizerPass());
-  pm.addPass(mlir::createCSEPass()); // Simplify the IR to improve readability.
+  // Simplify the IR
+  pm.addPass(mlir::createCSEPass());
   pm.addPass(mlir::createSymbolDCEPass());
-  pm.addPass(mlir::createCanonicalizerPass());
 
   if (failed(pm.run(module))) {
     llvm::errs() << "Pass execution failed";
     return nullptr;
   }
 
-  auto llvmIR = translateLLVMToLLVMIR(llvmContext, module);
+  auto llvmIR = translateLLVMToLLVMIR(llvmContext, module, isROCM, isSPIRV);
   if (!llvmIR) {
     llvm::errs() << "Translate to LLVM IR failed";
     return nullptr;
   }
+
+  if (::triton::tools::getBoolEnv("LLVM_IR_ENABLE_DUMP")) {
+    std::string mod_string;
+    std::unique_ptr<llvm::raw_string_ostream> ir_ss(
+        new llvm::raw_string_ostream(mod_string));
+    llvmIR->print(*ir_ss, nullptr);
+    std::cout << "// -----// LLVM IR Dump //----- //\n"
+              << mod_string << std::endl;
+  }
+
   return llvmIR;
 }
 
