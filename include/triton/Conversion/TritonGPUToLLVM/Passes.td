@@ -31,7 +31,7 @@ def ConvertTritonGPUToLLVM : Pass<"convert-triton-gpu-to-llvm", "mlir::ModuleOp"
                "bool", /*default*/"false",
                "compile for ROCM-compatible LLVM">,
         Option<"isSPIRV", "is-spirv",
-                "bool", /*default*/"false",
+                "bool", /*default*/"true",
                 "compile for SPIRV-compatible LLVM">,
     ];
 }

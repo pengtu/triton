@@ -160,7 +160,7 @@ public:
     if (isROCM) {
       addLegalDialect<ROCDL::ROCDLDialect>();
     } else if (isSPIRV) {
-      addLegalDialect<spirv::SPIRVDialect>();
+      addIllegalDialect<spirv::SPIRVDialect>();
     } else {
       addLegalDialect<NVVM::NVVMDialect>();
     }
@@ -251,14 +251,16 @@ public:
                                                  mlir::gpu::amd::HIP);
     } else if (isSPIRV) {
       auto triple = spirv::VerCapExtAttr::get(
-          spirv::Version::V_1_0, {spirv::Capability::Kernel},
+          spirv::Version::V_1_4, {spirv::Capability::Kernel},
           ArrayRef<spirv::Extension>(), context);
       auto targetAttr = spirv::TargetEnvAttr::get(
           triple, spirv::getDefaultResourceLimits(context),
-          spirv::ClientAPI::Unknown, spirv::Vendor::Unknown,
+          spirv::ClientAPI::OpenCL, spirv::Vendor::Unknown,
           spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
       SPIRVConversionOptions options;
-      SPIRVTypeConverter spirvTypeConverter(targetAttr, options);
+      mod->setAttr(spirv::getTargetEnvAttrName(), targetAttr);
+
+      TritonGPUToSPIRVTypeConverter spirvTypeConverter(targetAttr, options);
       mlir::populateGPUToSPIRVPatterns(spirvTypeConverter, patterns);
       mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
       mlir::populateSPIRVToLLVMConversionPatterns(typeConverter, patterns);
@@ -323,8 +325,7 @@ private:
         loc, arrayTy, /*isConstant=*/false, LLVM::Linkage::External,
         "global_smem", /*value=*/Attribute(), /*alignment=*/0,
         // Add ROCm support.
-        0 // static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace)
-        );
+        static_cast<unsigned>(NVVM::NVVMMemorySpace::kSharedMemorySpace));
     SmallVector<LLVM::LLVMFuncOp> funcs;
     mod.walk([&](LLVM::LLVMFuncOp func) { funcs.push_back(func); });
     assert(funcs.size() == 1 &&

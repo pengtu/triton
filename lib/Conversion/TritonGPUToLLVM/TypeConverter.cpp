@@ -1,6 +1,7 @@
 #include "TypeConverter.h"
 #include "Utility.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
 #include "triton/Conversion/MLIRTypes.h"
 
 using namespace mlir;
@@ -132,4 +133,23 @@ Type TritonGPUToLLVMTypeConverter::convertTritonTensorType(
   unsigned numElementsPerThread = getElemsPerThread(type);
   SmallVector<Type, 4> types(numElementsPerThread, eltType);
   return LLVM::LLVMStructType::getLiteral(ctx, types);
+}
+
+TritonGPUToSPIRVTypeConverter::TritonGPUToSPIRVTypeConverter(
+        spirv::TargetEnvAttr &targetAttr, SPIRVConversionOptions &option)
+        : SPIRVTypeConverter(targetAttr, option) {
+
+  // Add generic source materialzation for the use of a SPIRV op with
+  // a result type different from the original source such as
+  // index_type gpu::group_id  
+  addSourceMaterialization([&](OpBuilder &builder, Type resultType,
+                               ValueRange inputs,
+                               Location loc) -> Optional<Value> {
+    if (inputs.size() != 1)
+      return std::nullopt;
+
+    return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+            .getResult(0);
+  });
+ 
 }
