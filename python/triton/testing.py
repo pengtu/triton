@@ -18,8 +18,10 @@ def nvsmi(attrs):
 
 
 def do_bench(fn, warmup=25, rep=100, grad_to_none=None,
-             percentiles=(0.5, 0.2, 0.8),
-             record_clocks=False, fast_flush=False):
+             quantiles=None,
+             fast_flush=True,
+             return_mode="mean"):
+    assert return_mode in ["min", "max", "mean", "median"]
     import torch
     """
     Benchmark the runtime of the provided function. By default, return the median runtime of :code:`fn` along with
@@ -33,8 +35,8 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None,
     :type rep: int
     :param grad_to_none: Reset the gradient of the provided tensor to None
     :type grad_to_none: torch.tensor, optional
-    :param percentiles: Performance percentile to return in addition to the median.
-    :type percentiles: list[float]
+    :param quantiles: Performance percentile to return in addition to the median.
+    :type quantiles: list[float]
     :param fast_flush: Use faster kernel to flush L2 between measurements
     :type fast_flush: bool
     """
@@ -82,11 +84,49 @@ def do_bench(fn, warmup=25, rep=100, grad_to_none=None,
     # Record clocks
     torch.cuda.synchronize()
     times = torch.tensor([s.elapsed_time(e) for s, e in zip(start_event, end_event)])
-    if percentiles:
-        percentiles = torch.quantile(times, torch.tensor(percentiles)).tolist()
-        return tuple(percentiles)
-    else:
-        return torch.mean(times).item()
+    if quantiles is not None:
+        ret = torch.quantile(times, torch.tensor(quantiles)).tolist()
+        if len(ret) == 1:
+            ret = ret[0]
+        return ret
+    return getattr(torch, return_mode)(times).item()
+
+
+def assert_close(x, y, atol=None, rtol=None, err_msg=''):
+    import numpy as np
+    import torch
+
+    # canonicalize arguments to be tensors
+    if not isinstance(x, torch.Tensor):
+        x = torch.tensor(x)
+    if not isinstance(y, torch.Tensor):
+        y = torch.tensor(y)
+    # absolute tolerance
+    if atol is None:
+        atol = 1e-2
+    atol = atol(x.dtype) if callable(atol) else atol
+    # relative tolerance hook
+    if rtol is None:
+        rtol = 0.
+    rtol = rtol(x.dtype) if callable(rtol) else rtol
+    # we use numpy instead of pytorch
+    # as it seems more memory efficient
+    # pytorch tends to oom on large tensors
+    if isinstance(x, torch.Tensor):
+        if x.dtype == torch.bfloat16:
+            x = x.float()
+        x = x.cpu().detach().numpy()
+    if isinstance(y, torch.Tensor):
+        if y.dtype == torch.bfloat16:
+            y = y.float()
+        y = y.cpu().detach().numpy()
+    # we handle size==1 case separately as we can
+    # provide better error message there
+    if x.size > 1 or y.size > 1:
+        np.testing.assert_allclose(x, y, atol=atol, rtol=rtol, equal_nan=True)
+        return
+    if not np.allclose(x, y, atol=atol, rtol=rtol):
+        raise AssertionError(f'{err_msg} {x} is not close to {y} (atol={atol}, rtol={rtol})')
 
 
 class Benchmark:
