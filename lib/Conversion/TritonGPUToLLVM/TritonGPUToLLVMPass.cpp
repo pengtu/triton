@@ -55,7 +55,7 @@ public:
     if (isROCM) {
       addLegalDialect<ROCDL::ROCDLDialect>();
     } else if (isSPIRV) {
-      addLegalDialect<mlir::spirv::SPIRVDialect>();
+      addIllegalDialect<mlir::spirv::SPIRVDialect>();
     } else {
       addLegalDialect<NVVM::NVVMDialect>();
     }
@@ -135,7 +135,7 @@ struct FuncOpConversion : public FuncOpConversionBase {
     }
 
     auto ctx = funcOp->getContext();
-#if 0
+
     // Set an attribute to indicate this function is a kernel entry.
     newFuncOp->setAttr("nvvm.kernel",
                        rewriter.getIntegerAttr(type::u1Ty(ctx), 1));
@@ -143,13 +143,102 @@ struct FuncOpConversion : public FuncOpConversionBase {
     // Set an attribute for maxntidx, it could be used in latter LLVM codegen
     // for `nvvm.annotation` metadata.
     newFuncOp->setAttr("nvvm.maxntid", rewriter.getI32ArrayAttr(32 * numWarps));
-#endif
     rewriter.eraseOp(funcOp);
     return success();
   }
 
 private:
   int numWarps{0};
+};
+
+struct FuncOpToSPIRVConversionBase : public OpConversionPattern<func::FuncOp> {
+protected:
+  using OpConversionPattern<func::FuncOp>::OpConversionPattern;
+
+  // Convert input FuncOp to LLVMFuncOp by using the LLVMTypeConverter provided
+  // to this legalization pattern.
+  spirv::FuncOp
+  convertFuncOpToSPIRVFuncOp(func::FuncOp funcOp,
+                            ConversionPatternRewriter &rewriter) const {
+
+    return nullptr;
+  }
+
+};
+
+/// FuncOp legalization pattern that converts MemRef arguments to pointers to
+/// MemRef descriptors (LLVM struct data types) containing all the MemRef type
+/// information.
+struct FuncOpToSPIRVConversion : public FuncOpToSPIRVConversionBase {
+  FuncOpToSPIRVConversion(SPIRVTypeConverter &converter, MLIRContext *context, int numWarps,
+                   PatternBenefit benefit)
+          : FuncOpToSPIRVConversionBase(converter, context, benefit), NumWarps(numWarps) {}
+
+  LogicalResult
+  matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    ModuleOp mod = dyn_cast<ModuleOp>(funcOp->getParentOp());
+    if (!mod)
+      return failure();
+
+    auto fnType = funcOp.getFunctionType();
+    if (fnType.getNumResults() > 1)
+      return failure();
+
+    int num_inputs = fnType.getNumInputs();
+    TypeConverter::SignatureConversion signatureConverter(num_inputs);
+    for (const auto &argType : enumerate(fnType.getInputs())) {
+      auto convertedType = getTypeConverter()->convertType(argType.value());
+      if (!convertedType)
+        return failure();
+      signatureConverter.addInputs(argType.index(), convertedType);
+    }
+
+    Type resultType;
+    if (fnType.getNumResults() == 1) {
+      resultType = getTypeConverter()->convertType(fnType.getResult(0));
+      if (!resultType)
+        return failure();
+    }
+
+    // Create the converted spv.func op.
+    auto newFuncOp = rewriter.create<spirv::FuncOp>(
+            funcOp.getLoc(), funcOp.getName(),
+            rewriter.getFunctionType(signatureConverter.getConvertedTypes(),
+                                     resultType ? TypeRange(resultType)
+                                                : TypeRange()));
+
+    // Set the SPIRV kernel entry point
+    newFuncOp->setAttr(spirv::getEntryPointABIAttrName(), 
+      spirv::EntryPointABIAttr::get(getContext(), nullptr, std::nullopt));
+
+    // Copy over all attributes other than the function name and type.
+    for (const auto &namedAttr : funcOp->getAttrs()) {
+        if (namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
+            namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
+            namedAttr.getName() != funcOp.getArgAttrsAttrName())
+        newFuncOp->setAttr(namedAttr.getName(), namedAttr.getValue());
+    }
+
+    ArrayAttr attrs = funcOp.getAllArgAttrs();
+    for(int i = 0; i < attrs.size(); i++) {
+      if (attrs[i].isa<mlir::DictionaryAttr>()) {
+        newFuncOp.setArgAttrs(i, attrs[i].dyn_cast<mlir::DictionaryAttr>());
+      }
+    }
+
+    rewriter.inlineRegionBefore(funcOp.getBody(), newFuncOp.getBody(),
+                                newFuncOp.end());
+    if (failed(rewriter.convertRegionTypes(
+            &newFuncOp.getBody(), *getTypeConverter(), &signatureConverter)))
+      return failure();
+    rewriter.eraseOp(funcOp);
+    return success();
+
+  }
+
+private:
+  int NumWarps{0};
 };
 
 class TritonLLVMConversionTarget : public ConversionTarget {
@@ -204,8 +293,25 @@ public:
       TritonGPUToLLVMTypeConverter typeConverter(context, option);
       TritonLLVMFunctionConversionTarget funcTarget(*context, isROCM, isSPIRV);
       RewritePatternSet funcPatterns(context);
-      funcPatterns.add<FuncOpConversion>(typeConverter, numWarps,
-                                         /*benefit=*/1);
+      if (!isSPIRV) {
+        funcPatterns.add<FuncOpConversion>(typeConverter, numWarps,
+                                           /*benefit=*/1);
+      } else {
+        auto triple = spirv::VerCapExtAttr::get(
+            spirv::Version::V_1_4, {spirv::Capability::Kernel},
+            ArrayRef<spirv::Extension>(), context);
+        auto targetAttr = spirv::TargetEnvAttr::get(
+            triple, spirv::getDefaultResourceLimits(context),
+            spirv::ClientAPI::OpenCL, spirv::Vendor::Unknown,
+            spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
+        SPIRVConversionOptions options;
+        mod->setAttr(spirv::getTargetEnvAttrName(), targetAttr);
+        TritonGPUToSPIRVTypeConverter spirvTypeConverter(targetAttr, options);
+        funcPatterns.add<FuncOpToSPIRVConversion>(spirvTypeConverter, context,
+                                                  numWarps, /*benefit=*/ 1);
+        mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
+        populateSPIRVToLLVMFunctionConversionPatterns(typeConverter, funcPatterns);
+      }
       funcPatterns.add<ReturnOpConversion>(typeConverter);
       mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                             funcPatterns);
@@ -213,6 +319,8 @@ public:
               applyPartialConversion(mod, funcTarget, std::move(funcPatterns))))
         return signalPassFailure();
     }
+
+    // mod->dump();
 
     std::unique_ptr<DataFlowSolver> solver = createDataFlowSolver();
     AxisInfoAnalysis *axisInfoAnalysis = solver->load<AxisInfoAnalysis>();

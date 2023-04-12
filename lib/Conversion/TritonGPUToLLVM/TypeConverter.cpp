@@ -138,7 +138,9 @@ Type TritonGPUToLLVMTypeConverter::convertTritonTensorType(
 TritonGPUToSPIRVTypeConverter::TritonGPUToSPIRVTypeConverter(
         spirv::TargetEnvAttr &targetAttr, SPIRVConversionOptions &option)
         : SPIRVTypeConverter(targetAttr, option) {
-
+  addConversion([&](triton::PointerType type) -> llvm::Optional<Type> {
+    return convertTritonPointerType(type);
+  });
   // Add generic source materialzation for the use of a SPIRV op with
   // a result type different from the original source such as
   // index_type gpu::group_id  
@@ -151,5 +153,35 @@ TritonGPUToSPIRVTypeConverter::TritonGPUToSPIRVTypeConverter(
     return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
             .getResult(0);
   });
- 
 }
+
+Optional<spirv::StorageClass>
+addressSpaceToStorageClass(unsigned AddrSpace) {
+  switch (AddrSpace) {
+  case 0:
+    return spirv::StorageClass::Function;
+  case 1:
+    return spirv::StorageClass::CrossWorkgroup;
+  case 2:
+    return spirv::StorageClass::UniformConstant;
+  case 3:
+    return spirv::StorageClass::Workgroup;
+  case 4:
+    return spirv::StorageClass::Generic;
+  case 7:
+    return spirv::StorageClass::Input;
+  default:
+    return std::nullopt;
+  }
+}
+
+Type TritonGPUToSPIRVTypeConverter::convertTritonPointerType(
+        triton::PointerType type)  {
+  // Recursively translate pointee type
+  Optional<spirv::StorageClass> storageClass = addressSpaceToStorageClass(
+          type.getAddressSpace());
+  assert(storageClass && "uncompatible pointer address type in SPIRV");
+  return spirv::PointerType::get(convertType(type.getPointeeType()), *storageClass);
+}
+
+ 

@@ -36,6 +36,8 @@ public:
 
   TritonGPUToSPIRVTypeConverter(spirv::TargetEnvAttr &targetAttr,
                                 SPIRVConversionOptions &option);
+  
+  Type convertTritonPointerType(triton::PointerType type);
 };
 
 #endif
