@@ -6,5 +6,7 @@ add_mlir_library(TritonTestAnalysis
 
   LINK_LIBS PUBLIC
   TritonAnalysis
+  TritonIR
+  TritonGPUIR
   ${dialect_libs}
 )
