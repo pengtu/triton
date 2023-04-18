@@ -117,14 +117,14 @@ private:
   int numWarps{0};
 };
 
-struct FuncOpToSPIRVConversionBase : public OpConversionPattern<func::FuncOp> {
+struct FuncOpToSPIRVConversionBase : public OpConversionPattern<triton::FuncOp> {
 protected:
-  using OpConversionPattern<func::FuncOp>::OpConversionPattern;
+  using OpConversionPattern<triton::FuncOp>::OpConversionPattern;
 
   // Convert input FuncOp to LLVMFuncOp by using the LLVMTypeConverter provided
   // to this legalization pattern.
   spirv::FuncOp
-  convertFuncOpToSPIRVFuncOp(func::FuncOp funcOp,
+  convertFuncOpToSPIRVFuncOp(triton::FuncOp funcOp,
                             ConversionPatternRewriter &rewriter) const {
 
     return nullptr;
@@ -141,7 +141,7 @@ struct FuncOpToSPIRVConversion : public FuncOpToSPIRVConversionBase {
           : FuncOpToSPIRVConversionBase(converter, context, benefit), NumWarps(numWarps) {}
 
   LogicalResult
-  matchAndRewrite(func::FuncOp funcOp, OpAdaptor adaptor,
+  matchAndRewrite(triton::FuncOp funcOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     ModuleOp mod = dyn_cast<ModuleOp>(funcOp->getParentOp());
     if (!mod)
