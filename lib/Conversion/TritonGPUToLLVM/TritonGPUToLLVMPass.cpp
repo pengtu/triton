@@ -259,25 +259,8 @@ public:
       TritonGPUToLLVMTypeConverter typeConverter(context, option);
       TritonLLVMFunctionConversionTarget funcTarget(*context, isROCM, isSPIRV);
       RewritePatternSet funcPatterns(context);
-      if (!isSPIRV) {
-        funcPatterns.add<FuncOpConversion>(typeConverter, numWarps,
-                                           /*benefit=*/1);
-      } else {
-        auto triple = spirv::VerCapExtAttr::get(
-            spirv::Version::V_1_4, {spirv::Capability::Kernel},
-            ArrayRef<spirv::Extension>(), context);
-        auto targetAttr = spirv::TargetEnvAttr::get(
-            triple, spirv::getDefaultResourceLimits(context),
-            spirv::ClientAPI::OpenCL, spirv::Vendor::Unknown,
-            spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
-        SPIRVConversionOptions options;
-        mod->setAttr(spirv::getTargetEnvAttrName(), targetAttr);
-        TritonGPUToSPIRVTypeConverter spirvTypeConverter(targetAttr, options);
-        funcPatterns.add<FuncOpToSPIRVConversion>(spirvTypeConverter, context,
-                                                  numWarps, /*benefit=*/ 1);
-        mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
-        populateSPIRVToLLVMFunctionConversionPatterns(typeConverter, funcPatterns);
-      }
+      funcPatterns.add<FuncOpConversion>(typeConverter, numWarps,
+                                         /*benefit=*/1);
       funcPatterns.add<ReturnOpConversion>(typeConverter);
       mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                             funcPatterns);

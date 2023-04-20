@@ -76,7 +76,7 @@ static void amendLLVMFunc(llvm::Function *func, const NVVMMetadata &metadata,
       func->setCallingConv(llvm::CallingConv::AMDGPU_KERNEL);
       func->addFnAttr("amdgpu-flat-work-group-size", "1, 1024");
     } else if (isSPIRV) {
-      ; // TODO
+      func->setCallingConv(llvm::CallingConv::SPIR_KERNEL);
     } else {
       llvm::Metadata *mdArgs[] = {
           llvm::ValueAsMetadata::get(func), llvm::MDString::get(ctx, "kernel"),
@@ -261,6 +261,14 @@ translateLLVMToLLVMIR(llvm::LLVMContext *llvmContext, mlir::ModuleOp module,
   if (!llvmModule) {
     llvm::errs() << "Failed to emit LLVM IR\n";
     return nullptr;
+  }
+
+  // Set SPIRV module properties
+  if (isSPIRV) {
+    std::string triple = "spir64-unknown-unknown";
+    std::string layout = "e-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-n8:16:32:64";
+    llvmModule->setTargetTriple(triple);
+    llvmModule->setDataLayout(layout);
   }
 
   // Link external libraries before perform optimizations
