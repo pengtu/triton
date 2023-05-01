@@ -201,6 +201,25 @@ add_subdirectory(include)
 add_subdirectory(lib)
 #add_subdirectory(bin)
 
+# LLVMGenXIntrinsics - vc-intrinsics
+if (NOT TARGET LLVMGenXIntrinsics)
+  if(EXISTS "${LLVM_LIBRARY_PATH}/libLLVMGenXIntrinsics.a")
+    set(LLVMGenXIntrinsics_LIB_DIR "${LLVM_LIBRARY_PATH}")
+    set(LLVMGenXIntrinsics_INCLUDE_DIR "${LLVMGenXIntrinscs_LIB_DIR}/../include/llvm/GenXIntrinsics")
+  elseif(EXISTS "${LLVMGenXIntrinsics_LIB_DIR}/libLLVMGenXIntrinsics.a")
+    set(LLVMGenXIntrinsics_INCLUDE_DIR "${LLVMGenXIntrinscs_LIB_DIR}/../include/llvm/GenXIntrinsics")
+  else()
+    message(FATAL_ERROR "Can't find libLLVMGenXIntrinsics.a at ${LLVM_LIBRARY_DIR}. Please install it into that directory, or provide explicit path with -DLLVMGenXIntrinsics_DIR=")
+  endif()
+endif()
+include_directories(${LLVMGenXIntrinsics_INCLUDE_DIR})
+set(LLVMGenXIntrinsics_LDFLAGS "-L${LLVMGenXIntrinsics_INCLUDE_DIR}")
+set(LLVMGenXIntrinsics_LIBRARY
+  libLLVMGenXIntrinsics.a
+)
+message(STATUS "LLVMGenXIntrinsics_INCLUDE_DIR: ${LLVMGenXIntrinsics_INCLUDE_DIR}")
+message(STATUS "LLVMGenXIntrinsics_LIB_DIR: ${LLVMGenXIntrinsics_LIB_DIR}")
+
 # LLVM-SPIRV
 if(NOT DEFINED LLVM_SPIRV)
   if(EXISTS "${LLVM_LIBRARY_DIR}/libLLVMSPIRVLib.a")
@@ -256,22 +275,24 @@ if(TRITON_BUILD_PYTHON_MODULE)
 
   if(WIN32)
     target_link_libraries(triton PRIVATE ${LLVM_LIBRARIES} ${LLVM_SPIRV_LIBRARY} 
+      ${LLVMGenXIntrinsics_LIBRARY}
       ${CMAKE_DL_LIBS} ${TRITON_LIBRARIES}
     )
   elseif(APPLE)
-    target_link_libraries(triton ${LLVM_LIBRARIES} ${LLVM_SPIRV_LIBRARY} z
+    target_link_libraries(triton ${LLVM_LIBRARIES} ${LLVM_SPIRV_LIBRARY} 
+      ${LLVMGenXIntrinsics_LIBRARY} z
       ${TRITON_LIBRARIES}
     )
   else()
     target_link_libraries(triton ${LLVM_LIBRARIES} z
-      ${TRITON_LIBRARIES} ${LLVM_SPIRV_LIBRARY}
+      ${TRITON_LIBRARIES} ${LLVM_SPIRV_LIBRARY} ${LLVMGenXIntrinsics_LIBRARY}
     )
     # TODO: Figure out which target is sufficient to fix errors; triton is
     # apparently not enough
     link_libraries(stdc++fs)
   endif()
   
-  target_link_options(triton PRIVATE ${LLVM_LDFLAGS} ${LLVM_SPIRV_LDFLAGS})
+  target_link_options(triton PRIVATE ${LLVM_LDFLAGS} ${LLVM_SPIRV_LDFLAGS} ${LLVMGenXIntrinsics_LDFLAGS})
 endif()
 
 if(UNIX AND NOT APPLE)

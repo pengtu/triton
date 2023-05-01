@@ -4,6 +4,7 @@ add_mlir_conversion_library(TritonToTritonGPU
     ADDITIONAL_HEADER_DIRS
     ${PROJECT_SOURCE_DIR}/include/triton/Conversion/TritonToTritonGPU
     ${PROJECT_BINARY_DIR}/include/triton/Conversion/TritonToTritonGPU
+    ${LLVMGenXIntrinscs_LIB_DIR}
 
     DEPENDS
     TritonConversionPassIncGen

@@ -1,5 +1,8 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/TypeUtilities.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVDialect.h"
+
 
 #include "ConvertLayoutOpToLLVM.h"
 #include "LoadStoreOpToLLVM.h"
@@ -48,14 +51,15 @@ struct LoadOpConversion
       triton::LoadOp>::ConvertTritonGPUOpToLLVMPattern;
 
   LoadOpConversion(TritonGPUToLLVMTypeConverter &converter,
-                   AxisInfoAnalysis &axisAnalysisPass, PatternBenefit benefit)
+                   AxisInfoAnalysis &axisAnalysisPass, PatternBenefit benefit, bool isSPIRV)
       : ConvertTritonGPUOpToLLVMPattern<triton::LoadOp>(converter, benefit),
-        LoadStoreConversionBase(axisAnalysisPass) {}
+        LoadStoreConversionBase(axisAnalysisPass), isSPIRV(isSPIRV) {}
 
   LogicalResult
   matchAndRewrite(triton::LoadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
+    auto *ctx = rewriter.getContext();
 
     // original values
     Value ptr = op.getPtr();
@@ -125,117 +129,199 @@ struct LoadOpConversion
       const size_t movWidth = width < 16 ? 16 : width;
       assert(wordNElems * nWords * numVecs == numElems);
 
-      // TODO(Superjomn) Add cache policy fields to StoreOp.
-      // TODO(Superjomn) Deal with cache policy here.
-      const bool hasL2EvictPolicy = false;
-
-      PTXBuilder ptxBuilder;
-
       Value pred = mask ? maskElems[vecStart] : int_val(1, 1);
 
-      const std::string readConstraint =
-          (width == 64) ? "l" : ((width == 32) ? "r" : "c");
-      const std::string writeConstraint =
-          (width == 64) ? "=l" : ((width == 32) ? "=r" : "=c");
+      if (targetSPIRV()) {
+        SmallVector<Type> retTys(nWords, IntegerType::get(getContext(), width));
+        Type retTy = retTys.size() > 1
+                   ? vec_ty(IntegerType::get(ctx, width), nWords)
+                   : retTys[0];
 
-      // prepare asm operands
-      auto *dstsOpr = ptxBuilder.newListOperand();
-      for (size_t wordIdx = 0; wordIdx < nWords; ++wordIdx) {
-        auto *opr = ptxBuilder.newOperand(writeConstraint,
-                                          /*init=*/true); // =r operations
-        dstsOpr->listAppend(opr);
-      }
+        // Create block structure for the masked load.
+        auto *preheader = rewriter.getInsertionBlock();
+        auto opPosition = rewriter.getInsertionPoint();
+        auto *tailblock = rewriter.splitBlock(preheader, opPosition);
+        tailblock->addArgument(retTy, loc);
+        auto *condblock = rewriter.createBlock(tailblock);
 
-      auto *addrOpr =
-          ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
+        // Load the 'other' value for false condition
+        rewriter.setInsertionPoint(preheader, preheader->end());
 
-      // Define the instruction opcode
-      auto &ld = ptxBuilder.create<>("ld")
-                     ->o("volatile", op.getIsVolatile())
-                     .global()
-                     .o("ca", op.getCache() == triton::CacheModifier::CA)
-                     .o("cg", op.getCache() == triton::CacheModifier::CG)
-                     .o("L1::evict_first",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
-                     .o("L1::evict_last",
-                        op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
-                     .o("L1::cache_hint", hasL2EvictPolicy)
-                     .v(nWords)
-                     .b(width);
+        Value other_ = undef(retTy);
+        if (other) {
+          for (size_t ii = 0; ii < nWords; ++ii) {
+            size_t size = width / valueElemNBits;
 
-      PTXBuilder::Operand *evictOpr{};
+            auto vecTy = vec_ty(valueElemTy, size);
+            Value v = undef(vecTy);
+            for (size_t s = 0; s < size; ++s) {
+              Value falseVal = otherElems[vecStart + ii * size + s];
+              Value sVal = createIndexAttrConstant(
+                  rewriter, loc, this->getTypeConverter()->getIndexType(), s);
+              v = insert_element(vecTy, v, falseVal, sVal);
+            }
+            v = bitcast(v, IntegerType::get(ctx, width));
 
-      // Here lack a mlir::Value to bind to this operation, so disabled.
-      // if (has_l2_evict_policy)
-      //   evictOpr = ptxBuilder.newOperand(l2Evict, "l");
+            if (otherIsSplatConstInt) {
+              for (size_t s = 0; s < 32; s += valueElemNBits)
+                splatVal |= splatVal << valueElemNBits;
+              v = i32_val(splatVal);
+            }
 
-      if (!evictOpr)
-        ld(dstsOpr, addrOpr).predicate(pred, "b");
-      else
-        ld(dstsOpr, addrOpr, evictOpr).predicate(pred, "b");
-
-      if (other) {
-        for (size_t ii = 0; ii < nWords; ++ii) {
-          // PTX doesn't support mov.u8, so we need to use mov.u16
-          PTXInstr &mov =
-              ptxBuilder.create<>("mov")->o("u" + std::to_string(movWidth));
-
-          size_t size = width / valueElemNBits;
-
-          auto vecTy = LLVM::getFixedVectorType(valueElemTy, size);
-          Value v = undef(vecTy);
-          for (size_t s = 0; s < size; ++s) {
-            Value falseVal = otherElems[vecStart + ii * size + s];
-            Value sVal = createIndexAttrConstant(
-                rewriter, loc, this->getTypeConverter()->getIndexType(), s);
-            v = insert_element(vecTy, v, falseVal, sVal);
+            Value iiVal = createIndexAttrConstant(
+                rewriter, loc, this->getTypeConverter()->getIndexType(), ii);
+            if (nWords > 1) {
+              other_ = insert_element(retTy, v, other_, iiVal);
+            } else {
+              other_ = v;
+            }
           }
-          v = bitcast(v, IntegerType::get(getContext(), width));
-
-          PTXInstr::Operand *opr{};
-
-          if (otherIsSplatConstInt) {
-            for (size_t s = 0; s < 32; s += valueElemNBits)
-              splatVal |= splatVal << valueElemNBits;
-            opr = ptxBuilder.newConstantOperand(splatVal);
-          } else
-            opr = ptxBuilder.newOperand(v, readConstraint);
-
-          mov(dstsOpr->listGet(ii), opr).predicateNot(pred, "b");
         }
-      }
 
-      // Create inline ASM signature
-      SmallVector<Type> retTys(nWords, IntegerType::get(getContext(), width));
-      Type retTy = retTys.size() > 1
-                       ? LLVM::LLVMStructType::getLiteral(getContext(), retTys)
-                       : retTys[0];
+        rewriter.create<mlir::cf::CondBranchOp>(loc, pred, condblock, tailblock, ValueRange{other_});
 
-      // TODO: if (has_l2_evict_policy)
-      // auto asmDialectAttr =
-      // LLVM::AsmDialectAttr::get(rewriter.getContext(),
-      //                                                 LLVM::AsmDialect::AD_ATT);
-      Value ret = ptxBuilder.launch(rewriter, loc, retTy);
+        // Issue the load in true block
+        rewriter.setInsertionPoint(condblock, condblock->end());
 
-      // Extract and store return values
-      SmallVector<Value> rets;
-      for (unsigned int ii = 0; ii < nWords; ++ii) {
-        Value curr;
-        if (retTy.isa<LLVM::LLVMStructType>()) {
-          curr = extract_val(IntegerType::get(getContext(), width), ret, ii);
-        } else {
-          curr = ret;
+        Value addrElem = bitcast(ptrElems[vecStart], ptr_ty(retTy, 1 /*global*/));
+        Value ret = load(addrElem);
+        rewriter.create<mlir::cf::BranchOp>(loc, tailblock, ValueRange{ret});
+
+        rewriter.setInsertionPoint(tailblock, tailblock->begin());
+
+        ret = *tailblock->args_begin();
+
+        // Extract and store return values
+        SmallVector<Value> rets;
+        for (unsigned int ii = 0; ii < nWords; ++ii) {
+          Value curr;
+          if (retTy.isa<VectorType>()) {
+            curr = extract_element(IntegerType::get(ctx, width), ret, i32_val(ii));
+          } else {
+            curr = ret;
+          }
+          curr = bitcast(curr, LLVM::getFixedVectorType(
+                                   valueElemTy, width / valueElemNBits));
+          rets.push_back(curr);
         }
-        curr = bitcast(curr, LLVM::getFixedVectorType(valueElemTy,
-                                                      width / valueElemNBits));
-        rets.push_back(curr);
-      }
-      int tmp = width / valueElemNBits;
-      for (size_t ii = 0; ii < vec; ++ii) {
-        Value vecIdx = createIndexAttrConstant(
-            rewriter, loc, this->getTypeConverter()->getIndexType(), ii % tmp);
-        Value loaded = extract_element(valueElemTy, rets[ii / tmp], vecIdx);
-        loadedVals.push_back(loaded);
+        int tmp = width / valueElemNBits;
+        for (size_t ii = 0; ii < vec; ++ii) {
+            Value loaded = extract_element(valueElemTy, rets[ii / tmp], i32_val(ii % tmp));
+            loadedVals.push_back(loaded);
+        }
+
+      } else { // Not targetSPIRV
+
+        // TODO(Superjomn) Add cache policy fields to StoreOp.
+        // TODO(Superjomn) Deal with cache policy here.
+        const bool hasL2EvictPolicy = false;
+
+        PTXBuilder ptxBuilder;
+
+        const std::string readConstraint =
+            (width == 64) ? "l" : ((width == 32) ? "r" : "c");
+        const std::string writeConstraint =
+            (width == 64) ? "=l" : ((width == 32) ? "=r" : "=c");
+
+        // prepare asm operands
+        auto *dstsOpr = ptxBuilder.newListOperand();
+        for (size_t wordIdx = 0; wordIdx < nWords; ++wordIdx) {
+          auto *opr = ptxBuilder.newOperand(writeConstraint,
+                                            /*init=*/true); // =r operations
+          dstsOpr->listAppend(opr);
+        }
+
+        auto *addrOpr =
+            ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
+
+        // Define the instruction opcode
+        auto &ld = ptxBuilder.create<>("ld")
+                      ->o("volatile", op.getIsVolatile())
+                      .global()
+                      .o("ca", op.getCache() == triton::CacheModifier::CA)
+                      .o("cg", op.getCache() == triton::CacheModifier::CG)
+                      .o("L1::evict_first",
+                          op.getEvict() == triton::EvictionPolicy::EVICT_FIRST)
+                      .o("L1::evict_last",
+                          op.getEvict() == triton::EvictionPolicy::EVICT_LAST)
+                      .o("L1::cache_hint", hasL2EvictPolicy)
+                      .v(nWords)
+                      .b(width);
+
+        PTXBuilder::Operand *evictOpr{};
+
+        // Here lack a mlir::Value to bind to this operation, so disabled.
+        // if (has_l2_evict_policy)
+        //   evictOpr = ptxBuilder.newOperand(l2Evict, "l");
+
+        if (!evictOpr)
+          ld(dstsOpr, addrOpr).predicate(pred, "b");
+        else
+          ld(dstsOpr, addrOpr, evictOpr).predicate(pred, "b");
+
+        if (other) {
+          for (size_t ii = 0; ii < nWords; ++ii) {
+            // PTX doesn't support mov.u8, so we need to use mov.u16
+            PTXInstr &mov =
+                ptxBuilder.create<>("mov")->o("u" + std::to_string(movWidth));
+
+            size_t size = width / valueElemNBits;
+
+            auto vecTy = LLVM::getFixedVectorType(valueElemTy, size);
+            Value v = undef(vecTy);
+            for (size_t s = 0; s < size; ++s) {
+              Value falseVal = otherElems[vecStart + ii * size + s];
+              Value sVal = createIndexAttrConstant(
+                  rewriter, loc, this->getTypeConverter()->getIndexType(), s);
+              v = insert_element(vecTy, v, falseVal, sVal);
+            }
+            v = bitcast(v, IntegerType::get(getContext(), width));
+
+            PTXInstr::Operand *opr{};
+
+            if (otherIsSplatConstInt) {
+              for (size_t s = 0; s < 32; s += valueElemNBits)
+                splatVal |= splatVal << valueElemNBits;
+              opr = ptxBuilder.newConstantOperand(splatVal);
+            } else
+              opr = ptxBuilder.newOperand(v, readConstraint);
+
+            mov(dstsOpr->listGet(ii), opr).predicateNot(pred, "b");
+          }
+        }
+
+        // Create inline ASM signature
+        SmallVector<Type> retTys(nWords, IntegerType::get(getContext(), width));
+        Type retTy = retTys.size() > 1
+                        ? LLVM::LLVMStructType::getLiteral(getContext(), retTys)
+                        : retTys[0];
+
+        // TODO: if (has_l2_evict_policy)
+        // auto asmDialectAttr =
+        // LLVM::AsmDialectAttr::get(rewriter.getContext(),
+        //                                                 LLVM::AsmDialect::AD_ATT);
+        Value ret = ptxBuilder.launch(rewriter, loc, retTy);
+
+        // Extract and store return values
+        SmallVector<Value> rets;
+        for (unsigned int ii = 0; ii < nWords; ++ii) {
+          Value curr;
+          if (retTy.isa<LLVM::LLVMStructType>()) {
+            curr = extract_val(IntegerType::get(getContext(), width), ret, ii);
+          } else {
+            curr = ret;
+          }
+          curr = bitcast(curr, LLVM::getFixedVectorType(valueElemTy,
+                                                        width / valueElemNBits));
+          rets.push_back(curr);
+        }
+        int tmp = width / valueElemNBits;
+        for (size_t ii = 0; ii < vec; ++ii) {
+          Value vecIdx = createIndexAttrConstant(
+              rewriter, loc, this->getTypeConverter()->getIndexType(), ii % tmp);
+          Value loaded = extract_element(valueElemTy, rets[ii / tmp], vecIdx);
+          loadedVals.push_back(loaded);
+        }
       }
     } // end vec
 
@@ -245,6 +331,10 @@ struct LoadOpConversion
     rewriter.replaceOp(op, {resultStruct});
     return success();
   }
+
+  protected:
+    bool isSPIRV;
+    bool targetSPIRV() const { return isSPIRV; }
 };
 
 struct StoreOpConversion
@@ -254,9 +344,9 @@ struct StoreOpConversion
       triton::StoreOp>::ConvertTritonGPUOpToLLVMPattern;
 
   StoreOpConversion(TritonGPUToLLVMTypeConverter &converter,
-                    AxisInfoAnalysis &axisAnalysisPass, PatternBenefit benefit)
+                    AxisInfoAnalysis &axisAnalysisPass, PatternBenefit benefit, bool isSPIRV)
       : ConvertTritonGPUOpToLLVMPattern<triton::StoreOp>(converter, benefit),
-        LoadStoreConversionBase(axisAnalysisPass) {}
+        LoadStoreConversionBase(axisAnalysisPass), isSPIRV(isSPIRV) {}
 
   LogicalResult
   matchAndRewrite(triton::StoreOp op, OpAdaptor adaptor,
@@ -326,32 +416,87 @@ struct StoreOpConversion
       Type valArgTy = IntegerType::get(ctx, width);
       auto wordTy = vec_ty(valueElemTy, wordNElems);
 
+      std::cout << "wordTy: " << std::endl;
+      wordTy.dump();
+
       SmallVector<std::pair<Value, std::string>> asmArgs;
       for (size_t wordIdx = 0; wordIdx < nWords; ++wordIdx) {
         // llWord is a width-len composition
         Value llWord = undef(wordTy);
+
+        std::cout << "Init llWord: " << std::endl;
+        llWord.dump();
+
         // Insert each value element to the composition
         for (size_t elemIdx = 0; elemIdx < wordNElems; ++elemIdx) {
           const size_t elemOffset = vecStart + wordIdx * wordNElems + elemIdx;
           assert(elemOffset < valueElems.size());
           Value elem = valueElems[elemOffset];
+
+          std::cout << "valueElems[elemOffset]: " << elemOffset << std::endl;
+          elem.dump();
+
           if (elem.getType().isInteger(1))
             elem = sext(i8_ty, elem);
           elem = bitcast(elem, valueElemTy);
-
+          
+          std::cout << "elem: " << std::endl;
+          elem.dump();
+          
           llWord = insert_element(wordTy, llWord, elem, i32_val(elemIdx));
+
+          std::cout << "llWord: " << std::endl;
+          llWord.dump();
         }
         llWord = bitcast(llWord, valArgTy);
+
+        std::cout << "Final llWord: " << std::endl;
+        llWord.dump();
+
         std::string constraint =
             (width == 64) ? "l" : ((width == 32) ? "r" : "c");
         asmArgs.emplace_back(llWord, constraint);
       }
 
+      Value maskVal = llMask ? and_(mask, maskElems[vecStart]) : mask;
+
+      if (targetSPIRV()) {
+        auto vecTy = vec_ty(valArgTy, nWords);
+        Value vecWord = undef(vecTy);
+        for (int index = 0; index < asmArgs.size(); ++index) {
+          auto llWord = asmArgs[index].first;
+          vecWord = insert_element(vecTy, vecWord, llWord, i32_val(index));
+          std::cout << "vecWord: " << std::endl;
+          vecWord.dump();
+        }
+        
+        // Create block structure for the masked store.
+        auto *preheader = rewriter.getInsertionBlock();
+        auto opPosition = rewriter.getInsertionPoint();
+        auto *tailblock = rewriter.splitBlock(preheader, opPosition);
+        auto *condblock = rewriter.createBlock(tailblock);
+
+        // Test the mask
+        rewriter.setInsertionPoint(preheader, preheader->end());
+        rewriter.create<mlir::cf::CondBranchOp>(loc, maskVal, condblock, tailblock);
+
+        // Do the Store
+        rewriter.setInsertionPoint(condblock, condblock->end());
+
+        Value addrElem = bitcast(ptrElems[vecStart], ptr_ty(vecTy, 1 /*global*/));
+
+        store(vecWord, addrElem);
+        rewriter.create<mlir::cf::BranchOp>(loc, tailblock);
+
+        rewriter.setInsertionPoint(tailblock, tailblock->begin());
+
+        rewriter.eraseOp(op);
+        return success();
+      }
+
       // Prepare the PTX inline asm.
       PTXBuilder ptxBuilder;
       auto *asmArgList = ptxBuilder.newListOperand(asmArgs);
-
-      Value maskVal = llMask ? and_(mask, maskElems[vecStart]) : mask;
 
       auto *asmAddr =
           ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
@@ -371,6 +516,10 @@ struct StoreOpConversion
     rewriter.eraseOp(op);
     return success();
   }
+  
+  protected:
+    bool isSPIRV;
+    bool targetSPIRV() const { return isSPIRV; }
 };
 
 struct AtomicCASOpConversion
@@ -850,9 +999,9 @@ void populateLoadStoreOpToLLVMPatterns(
     int numWarps, AxisInfoAnalysis &axisInfoAnalysis,
     const Allocation *allocation, Value smem,
     ConvertTritonGPUOpToLLVMPatternBase::IndexCacheInfo &indexCacheInfo,
-    PatternBenefit benefit) {
-  patterns.add<LoadOpConversion>(typeConverter, axisInfoAnalysis, benefit);
-  patterns.add<StoreOpConversion>(typeConverter, axisInfoAnalysis, benefit);
+    PatternBenefit benefit, bool isSPIRV) {
+  patterns.add<LoadOpConversion>(typeConverter, axisInfoAnalysis, benefit, isSPIRV);
+  patterns.add<StoreOpConversion>(typeConverter, axisInfoAnalysis, benefit, isSPIRV);
   patterns.add<AtomicCASOpConversion>(typeConverter, allocation, smem,
                                       axisInfoAnalysis, benefit);
   patterns.add<AtomicRMWOpConversion>(typeConverter, allocation, smem,

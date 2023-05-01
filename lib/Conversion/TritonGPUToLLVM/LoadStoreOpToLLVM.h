@@ -11,6 +11,6 @@ void populateLoadStoreOpToLLVMPatterns(
     int numWarps, AxisInfoAnalysis &axisInfoAnalysis,
     const Allocation *allocation, Value smem,
     ConvertTritonGPUOpToLLVMPatternBase::IndexCacheInfo &indexCacheInfo,
-    PatternBenefit benefit);
+    PatternBenefit benefit, bool isSPIRV);
 
 #endif

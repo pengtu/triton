@@ -294,11 +294,15 @@ public:
       populateFunc(typeConverter, patterns, numWarps, *axisInfoAnalysis,
                    &allocation, smem, /*benefit*/ 1);
     };
+    auto populatePatterns3 =[&](auto populateFunc, auto isSPIRV) {
+      populateFunc(typeConverter, patterns, numWarps, *axisInfoAnalysis,
+                   &allocation, smem, indexCacheInfo, /*benefit*/ 1, isSPIRV);
+    };
     populatePatterns1(populateTritonGPUToLLVMPatterns);
     populatePatterns1(populateConvertLayoutOpToLLVMPatterns);
     populatePatterns2(populateDotOpToLLVMPatterns);
     populatePatterns2(populateElementwiseOpToLLVMPatterns);
-    populatePatterns1(populateLoadStoreOpToLLVMPatterns);
+    populatePatterns3(populateLoadStoreOpToLLVMPatterns, isSPIRV);
     populatePatterns1(populateReduceOpToLLVMPatterns);
     populatePatterns2(populateViewOpToLLVMPatterns);
 
