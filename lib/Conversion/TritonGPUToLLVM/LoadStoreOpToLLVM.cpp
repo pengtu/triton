@@ -210,6 +210,16 @@ struct LoadOpConversion
             loadedVals.push_back(loaded);
         }
 
+#if 0
+        std::cout << "preheader BB: " << std::endl;
+        preheader->dump();
+
+        std::cout << "cond BB: " << std::endl;
+        condblock->dump();
+
+        std::cout << "tail BB: " << std::endl;
+        tailblock->dump();
+#endif        
       } else { // Not targetSPIRV
 
         // TODO(Superjomn) Add cache policy fields to StoreOp.
@@ -416,16 +426,10 @@ struct StoreOpConversion
       Type valArgTy = IntegerType::get(ctx, width);
       auto wordTy = vec_ty(valueElemTy, wordNElems);
 
-      std::cout << "wordTy: " << std::endl;
-      wordTy.dump();
-
       SmallVector<std::pair<Value, std::string>> asmArgs;
       for (size_t wordIdx = 0; wordIdx < nWords; ++wordIdx) {
         // llWord is a width-len composition
         Value llWord = undef(wordTy);
-
-        std::cout << "Init llWord: " << std::endl;
-        llWord.dump();
 
         // Insert each value element to the composition
         for (size_t elemIdx = 0; elemIdx < wordNElems; ++elemIdx) {
@@ -433,25 +437,13 @@ struct StoreOpConversion
           assert(elemOffset < valueElems.size());
           Value elem = valueElems[elemOffset];
 
-          std::cout << "valueElems[elemOffset]: " << elemOffset << std::endl;
-          elem.dump();
-
           if (elem.getType().isInteger(1))
             elem = sext(i8_ty, elem);
           elem = bitcast(elem, valueElemTy);
           
-          std::cout << "elem: " << std::endl;
-          elem.dump();
-          
           llWord = insert_element(wordTy, llWord, elem, i32_val(elemIdx));
-
-          std::cout << "llWord: " << std::endl;
-          llWord.dump();
         }
         llWord = bitcast(llWord, valArgTy);
-
-        std::cout << "Final llWord: " << std::endl;
-        llWord.dump();
 
         std::string constraint =
             (width == 64) ? "l" : ((width == 32) ? "r" : "c");
@@ -466,8 +458,6 @@ struct StoreOpConversion
         for (int index = 0; index < asmArgs.size(); ++index) {
           auto llWord = asmArgs[index].first;
           vecWord = insert_element(vecTy, vecWord, llWord, i32_val(index));
-          std::cout << "vecWord: " << std::endl;
-          vecWord.dump();
         }
         
         // Create block structure for the masked store.
@@ -489,30 +479,28 @@ struct StoreOpConversion
         rewriter.create<mlir::cf::BranchOp>(loc, tailblock);
 
         rewriter.setInsertionPoint(tailblock, tailblock->begin());
+      } else {
 
-        rewriter.eraseOp(op);
-        return success();
+        // Prepare the PTX inline asm.
+        PTXBuilder ptxBuilder;
+        auto *asmArgList = ptxBuilder.newListOperand(asmArgs);
+
+        auto *asmAddr =
+            ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
+
+        auto &ptxStoreInstr =
+            ptxBuilder.create<>("st")->global().v(nWords).b(width);
+        ptxStoreInstr(asmAddr, asmArgList).predicate(maskVal, "b");
+
+        Type boolTy = getTypeConverter()->convertType(rewriter.getIntegerType(1));
+        llvm::SmallVector<Type> argTys({boolTy, ptr.getType()});
+        argTys.insert(argTys.end(), nWords, valArgTy);
+
+        auto asmReturnTy = void_ty(ctx);
+
+        ptxBuilder.launch(rewriter, loc, asmReturnTy);
       }
-
-      // Prepare the PTX inline asm.
-      PTXBuilder ptxBuilder;
-      auto *asmArgList = ptxBuilder.newListOperand(asmArgs);
-
-      auto *asmAddr =
-          ptxBuilder.newAddrOperand(ptrElems[vecStart], "l", in_off);
-
-      auto &ptxStoreInstr =
-          ptxBuilder.create<>("st")->global().v(nWords).b(width);
-      ptxStoreInstr(asmAddr, asmArgList).predicate(maskVal, "b");
-
-      Type boolTy = getTypeConverter()->convertType(rewriter.getIntegerType(1));
-      llvm::SmallVector<Type> argTys({boolTy, ptr.getType()});
-      argTys.insert(argTys.end(), nWords, valArgTy);
-
-      auto asmReturnTy = void_ty(ctx);
-
-      ptxBuilder.launch(rewriter, loc, asmReturnTy);
-    }
+    } // for  
     rewriter.eraseOp(op);
     return success();
   }

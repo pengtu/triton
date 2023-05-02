@@ -38,17 +38,13 @@ std::string translateLLVMIRToSPIRV(llvm::Module &module) {
   // initLLVM();
 
   llvm::SmallVector<char, 0> buffer;
-  std::string triple = "spir64-unknown-unknown";
-  std::string layout = "e-i64:64-v16:16-v24:32-v32:32-v48:64-v96:128-v192:256-v256:256-v512:512-v1024:1024-n8:16:32:64";
 
   // verify and store llvm
   llvm::legacy::PassManager pm;
   pm.add(llvm::createVerifierPass());
   pm.run(module);
   // module->print(llvm::outs(), nullptr);
-    
-  module.setTargetTriple(triple);
-  module.setDataLayout(layout);
+
   if (module.materializeAll()) {
     llvm::errs() << "SPIRVTranslation: failed to read the LLVM module IR!";
     llvm::errs().flush();

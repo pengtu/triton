@@ -52,23 +52,45 @@ static void amendLLVMFunc(llvm::Function *func, const NVVMMetadata &metadata,
           return llvm::ConstantInt::get(llvm::IntegerType::get(ctx, 32),
                                         llvm::APInt(32, value));
         }));
-
+    
     SmallVector<llvm::Metadata *> md_args = {llvm::ValueAsMetadata::get(func)};
-    if (maxntid.size() > 0) {
-      md_args.push_back(llvm::MDString::get(ctx, "maxntidx"));
-      md_args.push_back(llvm::ValueAsMetadata::get(maxntid[0]));
-    }
-    if (maxntid.size() > 1) {
-      md_args.push_back(llvm::MDString::get(ctx, "maxntidy"));
-      md_args.push_back(llvm::ValueAsMetadata::get(maxntid[1]));
-    }
-    if (maxntid.size() > 2) {
-      md_args.push_back(llvm::MDString::get(ctx, "maxntidz"));
-      md_args.push_back(llvm::ValueAsMetadata::get(maxntid[2]));
-    }
 
-    module->getOrInsertNamedMetadata("nvvm.annotations")
-        ->addOperand(llvm::MDNode::get(ctx, md_args));
+    if (isSPIRV) {
+      md_args.push_back(llvm::ValueAsMetadata::get(
+        llvm::ConstantInt::get(
+          llvm::Type::getInt32Ty(ctx), 17 /*LocalSize*/)));
+      md_args.push_back(llvm::ValueAsMetadata::get(
+          maxntid.size() > 0 ? 
+            maxntid[0] : 
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 32)));
+      md_args.push_back(llvm::ValueAsMetadata::get(
+          maxntid.size() > 1 ?
+            maxntid[1] : 
+            llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1)));        
+      md_args.push_back(llvm::ValueAsMetadata::get(
+          maxntid.size() > 2 ?
+            maxntid[2] : 
+          llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 1)));
+      
+      module->getOrInsertNamedMetadata("spirv.ExecutionMode")
+          ->addOperand(llvm::MDNode::get(ctx, md_args));
+    } else {
+      if (maxntid.size() > 0) {
+        md_args.push_back(llvm::MDString::get(ctx, "maxntidx"));
+        md_args.push_back(llvm::ValueAsMetadata::get(maxntid[0]));
+      }
+      if (maxntid.size() > 1) {
+        md_args.push_back(llvm::MDString::get(ctx, "maxntidy"));
+        md_args.push_back(llvm::ValueAsMetadata::get(maxntid[1]));
+      }
+      if (maxntid.size() > 2) {
+        md_args.push_back(llvm::MDString::get(ctx, "maxntidz"));
+        md_args.push_back(llvm::ValueAsMetadata::get(maxntid[2]));
+      }
+
+      module->getOrInsertNamedMetadata("nvvm.annotations")
+          ->addOperand(llvm::MDNode::get(ctx, md_args));
+    }
   }
 
   if (metadata.isKernel) {
