@@ -59,6 +59,7 @@ enum backend_t {
   HOST,
   CUDA,
   ROCM,
+  SPIRV,
 };
 
 void init_triton_runtime(py::module &&m) {
@@ -67,6 +68,7 @@ void init_triton_runtime(py::module &&m) {
       .value("HOST", HOST)
       .value("CUDA", CUDA)
       .value("ROCM", ROCM)
+      .value("SPIRV", SPIRV)
       .export_values();
 }
 
@@ -1567,6 +1569,30 @@ void init_triton_translation(py::module &m) {
         llvmModule->print(os, nullptr);
         os.flush();
         return str;
+      },
+      ret::take_ownership);
+
+  m.def(
+      "translate_llvmir_to_spirv",
+      [](const std::string llvmIR, int capability, int version) -> std::string {
+        py::gil_scoped_release allow_threads;
+        // create LLVM module from C++
+        llvm::LLVMContext context;
+        std::unique_ptr<llvm::MemoryBuffer> buffer =
+            llvm::MemoryBuffer::getMemBuffer(llvmIR.c_str());
+        llvm::SMDiagnostic error;
+        std::unique_ptr<llvm::Module> module =
+            llvm::parseIR(buffer->getMemBufferRef(), error, context);
+        if (!module) {
+          llvm::report_fatal_error(
+              "failed to parse IR: " + error.getMessage() +
+              "lineno: " + std::to_string(error.getLineNo()));
+        }
+
+        // translate module to SPIRV
+        auto spirvBitcode =
+            triton::translateLLVMIRToSPIRV(*module);
+        return spirvBitcode;
       },
       ret::take_ownership);
 

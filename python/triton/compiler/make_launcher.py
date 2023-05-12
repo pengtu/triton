@@ -11,6 +11,9 @@ def is_hip():
     import torch
     return torch.version.hip is not None
 
+# FIX ME
+def is_spirv():
+    return True
 
 # ----- stub --------
 
@@ -47,7 +50,7 @@ def make_stub(name, signature, constants):
 
 def ty_to_cpp(ty):
     if ty[0] == '*':
-        return "hipDeviceptr_t" if is_hip() else "CUdeviceptr"
+        return "void*" if is_spirv() else "hipDeviceptr_t" if is_hip() else "CUdeviceptr"
     return {
         "i1": "int32_t",
         "i8": "int8_t",
@@ -99,6 +102,149 @@ def generate_launcher(constants, signature):
 
     # generate glue code
     if is_hip():
+        src = f"""
+    #include <level_zero/ze_api.h>
+    #include <Python.h>
+    #include <stdio.h>
+
+    static inline void gpuAssert(ze_result_t code, const char *file, int line)
+    {{
+      if (code != ZE_RESULT_SUCCESS)
+      {{
+         const char* prefix = "Triton Error [ZE]: ";
+         const char* str = to_string(code).str();
+         char err[1024] = {{0}};
+         strcat(err, prefix);
+         strcat(err, str);
+         PyErr_SetString(PyExc_RuntimeError, err);
+      }}
+    }}
+
+    #define ZE_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); if(PyErr_Occurred()) return NULL; }}
+
+    static void _launch(int gridX, int gridY, int gridZ, int num_warps, int shared_memory, ze_command_queue_handle_t queue, ze_kernel_handle_t function, {arg_decls}) {{
+      void *params[] = {{ {', '.join(f"&arg{i}" for i in signature.keys() if i not in constants)} }};
+
+      if (gridX*gridY*gridZ > 0) {{
+        {" ".join(f'zeKernelSetArgumentValue(function, {idx}, sizeof({ty_to_cpp(item)}), params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if i not in constants]))}
+        zeKernelSetGroupSize(function, 32*num_warps, 1, 1);
+        ze_command_list_handle_t cmdList;
+        ze_command_list_desc_t cmdListDesc = {};
+        ZE_CHECK(zeCommandListCreate(context, device, &cmdListDesc, &cmdList));
+        ze_group_count_t grpCount = {gridX, gridY, gridZ};
+        ZE_CHECK(zeCommandListAppendLaunchKernel(cmdList, function, &grpCount, nullptr, 0, nullptr));
+        ZE_CHECK(zeCommandListClose(cmdList));
+        ZE_CHECK(zeCommandQueueExecuteCommandLists(queue, 1, &cmdList, nullptr));
+        ZE_CHECK(hipModuleLaunchKernel(function, gridX, gridY, gridZ, 64*num_warps, 1, 1, shared_memory, stream, params, 0));
+      }}
+    }}
+
+    typedef struct _DevicePtrInfo {{
+      void* dev_ptr;
+      bool valid;
+    }} DevicePtrInfo;
+
+    static inline DevicePtrInfo getPointer(PyObject *obj, int idx) {{
+      DevicePtrInfo ptr_info;
+      ptr_info.dev_ptr = 0;
+      ptr_info.valid = true;
+      if (PyLong_Check(obj)) {{
+        ptr_info.dev_ptr = PyLong_AsUnsignedLongLong(obj);
+        return ptr_info;
+      }}
+      if (obj == Py_None) {{
+        // valid nullptr
+        return ptr_info;
+      }}
+      PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
+      if(ptr){{
+        PyObject *empty_tuple = PyTuple_New(0);
+        PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
+        Py_DECREF(empty_tuple);
+        Py_DECREF(ptr);
+        if (!PyLong_Check(ret)) {{
+          PyErr_SetString(PyExc_TypeError, "data_ptr method of Pointer object must return 64-bit int");
+          ptr_info.valid = false;
+          return ptr_info;
+        }}
+        ptr_info.dev_ptr = PyLong_AsUnsignedLongLong(ret);
+        if(!ptr_info.dev_ptr)
+          return ptr_info;
+        //uint64_t dev_ptr;
+        //int status = cuPointerGetAttribute(&dev_ptr, CU_POINTER_ATTRIBUTE_DEVICE_POINTER, ptr_info.dev_ptr);
+        //if (status == CUDA_ERROR_INVALID_VALUE) {{
+        //    PyErr_Format(PyExc_ValueError,
+        //                "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
+        //    ptr_info.valid = false;
+        //}}
+        //ptr_info.dev_ptr = dev_ptr;
+        Py_DECREF(ret);  // Thanks ChatGPT!
+        return ptr_info;
+      }}
+      PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
+      return ptr_info;
+    }}
+
+    static PyObject* launch(PyObject* self, PyObject* args) {{
+
+      int gridX, gridY, gridZ;
+      uint64_t _stream;
+      uint64_t _function;
+      int num_warps;
+      int shared_memory;
+      PyObject *launch_enter_hook = NULL;
+      PyObject *launch_exit_hook = NULL;
+      PyObject *compiled_kernel = NULL;
+
+      {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
+      if (!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &num_warps, &shared_memory, &_stream, &_function, &launch_enter_hook, &launch_exit_hook, &compiled_kernel, {', '.join(f"&_arg{i}" for i, ty in signature.items())})) {{
+        return NULL;
+      }}
+
+      if (launch_enter_hook != Py_None) {{
+        PyObject_CallObject(launch_enter_hook, args);
+      }}
+
+      // raise exception asap
+        // raise exception asap
+      {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
+      _launch(gridX, gridY, gridZ, num_warps, shared_memory, (ze_command_queue_handle_t)_stream, (ze_kernel_handle_t)_function, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+      
+      if (launch_exit_hook != Py_None) {{
+        PyObject_CallObject(launch_exit_hook, args);
+      }}
+      if (PyErr_Occurred()) {{
+        return NULL;
+      }}
+
+      // return None
+      Py_INCREF(Py_None);
+      return Py_None;
+    }}
+
+    static PyMethodDef ModuleMethods[] = {{
+      {{"launch", launch, METH_VARARGS, "Entry point for all kernels with this signature"}},
+      {{NULL, NULL, 0, NULL}} // sentinel
+    }};
+
+    static struct PyModuleDef ModuleDef = {{
+      PyModuleDef_HEAD_INIT,
+      \"__triton_launcher\",
+      NULL, //documentation
+      -1, //size
+      ModuleMethods
+    }};
+
+    PyMODINIT_FUNC PyInit___triton_launcher(void) {{
+      PyObject *m = PyModule_Create(&ModuleDef);
+      if(m == NULL) {{
+        return NULL;
+      }}
+      PyModule_AddFunctions(m, ModuleMethods);
+      return m;
+    }}
+    """
+    elif is_hip():
         src = f"""
     #define __HIP_PLATFORM_AMD__
     #include <hip/hip_runtime.h>

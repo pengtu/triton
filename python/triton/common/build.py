@@ -15,6 +15,10 @@ def is_hip():
     import torch
     return torch.version.hip is not None
 
+# TODO: properly set is_spirv
+def is_spirv():
+    return True
+
 
 @functools.lru_cache()
 def libcuda_dirs():
@@ -26,6 +30,9 @@ def libcuda_dirs():
 def rocm_path_dir():
     return os.getenv("ROCM_PATH", default="/opt/rocm")
 
+@functools.lru_cache()
+def ze_path_dir():
+    return os.getenv("ZE_PATH", default=/usr/local)
 
 @contextlib.contextmanager
 def quiet():
@@ -38,7 +45,10 @@ def quiet():
 
 
 def _build(name, src, srcdir):
-    if is_hip():
+    if is_spirv():
+        ze_lib_dir = os.path.join(ze_path_dir(), "lib")
+        ze_include_dir = os.path.join(ze_path_dir(), "include/level_zero")
+    elif is_hip():
         hip_lib_dir = os.path.join(rocm_path_dir(), "lib")
         hip_include_dir = os.path.join(rocm_path_dir(), "include")
     else:
@@ -74,7 +84,9 @@ def _build(name, src, srcdir):
         scheme = 'posix_prefix'
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
 
-    if is_hip():
+    if is_spirv():
+        ret = subprocess.check_call([cc, src, f"-I{ze_include_dir}", f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", f"-L{ze_lib_dir}", "-lze_loader", "-o", so])
+    elif is_hip():
         ret = subprocess.check_call([cc, src, f"-I{hip_include_dir}", f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", f"-L{hip_lib_dir}", "-lamdhip64", "-o", so])
     else:
         cc_cmd = [cc, src, "-O3", f"-I{cu_include_dir}", f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", "-lcuda", "-o", so]

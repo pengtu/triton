@@ -18,7 +18,7 @@ import triton._C.libtriton.triton as _triton
 # TODO: runtime.errors
 from ..runtime.autotuner import OutOfResources
 from ..runtime.cache import get_cache_manager
-from ..runtime.driver import get_cuda_utils, get_hip_utils
+from ..runtime.driver import get_cuda_utils, get_hip_utils, get_spirv_utils
 from ..tools.disasm import extract
 from .code_generator import ast_to_ttir
 from .make_launcher import make_stub
@@ -160,6 +160,13 @@ def ptx_to_cubin(ptx: str, arch: int):
     ptxas, _ = path_to_ptxas()
     return _triton.compile_ptx_to_cubin(ptx, ptxas, arch)
 
+def llir_to_spv(mod: Any, arch: int, ptx_version: int = None) -> str:
+    '''
+    Translate TritonGPU module to SPIRV bitcode.
+    :param mod: a TritonGPU dialect module
+    :return: SPRIV bitcode
+    '''
+    return _triton.translate_llvmir_to_spirv(mod, arch, ptx_version)
 
 # AMDGCN translation
 
@@ -319,6 +326,9 @@ instance_descriptor = namedtuple("instance_descriptor", ["divisible_by_16", "equ
 def _is_cuda(arch):
     return isinstance(arch, int)
 
+def _is_spirv(arch):
+    return arch == 'spirv'
+
 
 def get_architecture_descriptor(capability):
     if capability is None:
@@ -347,7 +357,10 @@ def add_rocm_stages(arch, extern_libs, stages):
                                                              gfx_arch_full_details[0],
                                                              gfx_arch_full_details[2]))
 
-
+def add_spirv_stages(arch, extern_libs, stages) :
+    stages["spv"] = (lambda path: Path(path).read_text(),
+                     lambda src: llir_to_spv)
+    
 def add_cuda_stages(arch, extern_libs, stages):
 
     stages["ptx"] = (lambda path: Path(path).read_text(),
@@ -359,6 +372,7 @@ def add_cuda_stages(arch, extern_libs, stages):
 def compile(fn, **kwargs):
     arch = get_architecture_descriptor(kwargs.get("cc", None))
     is_cuda = _is_cuda(arch)
+    is_spirv = _is_spirv(arch)
     context = _triton.ir.context()
     asm = dict()
     constants = kwargs.get("constants", dict())
@@ -379,6 +393,8 @@ def compile(fn, **kwargs):
                       lambda src: ttgir_to_llir(src, extern_libs, arch))
     if is_cuda:
         add_cuda_stages(arch, extern_libs, stages)
+    elif is_spirv:
+        add_spirv_stages(arch, extern_libs, stages)
     else:
         add_rocm_stages(arch, extern_libs, stages)
 
@@ -520,11 +536,18 @@ class CompiledKernel:
         self.cu_module = None
         self.cu_function = None
         self.is_hip = "amdgcn" in asm
+        self.is_spirv = "spv" in asm
 
     def _init_handles(self):
         if self.cu_module is not None:
             return
         device = triton.runtime.jit.get_current_device()
+        if self.is_spirv:
+            spirv_utils = get_spirv_utils()
+            max_shared = spirv_utils.get_device_properties(device)["max_shared_mem"]
+            if self.shared > max_shared:
+                raise OutOfResources(self.shared, max_shared, "shared memory")
+            mod, func, n_regs, n_spills = spirv_utils.load_binary(self.metadata["name"], self.asm["spv"], self.shared, device)
         if self.is_hip:
             hip_utils = get_hip_utils()
             max_shared = hip_utils.get_device_properties(device)["max_shared_mem"]
