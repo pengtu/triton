@@ -50,6 +50,10 @@ class SpirvUtils(object):
             int device_id;
             if(!PyArg_ParseTuple(args, "i", &device_id))
                 return NULL;
+
+            if (device_id > devices.size())
+                return NULL;
+
             // Get device handle
             ze_device_handle_t phDevice = devices[device_id];
 
@@ -97,10 +101,16 @@ class SpirvUtils(object):
             const char* data;
             Py_ssize_t data_size;
             int shared;
-            int device;
-            if(!PyArg_ParseTuple(args, "ss#ii", &name, &data, &data_size, &shared, &device)) {
+            int device_id;
+            if(!PyArg_ParseTuple(args, "ss#ii", &name, &data, &data_size, &shared, &device_id)) {
                 return NULL;
             }
+
+            if (device_id > devices.size()) {
+                return NULL;
+            }
+            ze_device_handle_t device = devices[device_id];
+
             int32_t n_regs = 0;
             int32_t n_spills = 0;
 
@@ -122,9 +132,110 @@ class SpirvUtils(object):
             return Py_BuildValue("(KKii)", (uint64_t)mod, (uint64_t)fun, n_regs, n_spills);
         }
 
+        static PyObject* initContext(PyObject* self) {
+            // Initialize driver
+            ZE_CHECK(zeInit(ZE_INIT_FLAG_GPU_ONLY));
+            uint32_t driverCount = 0;
+            ZE_CHECK(zeDriverGet(&driverCount, nullptr));
+
+            // Retrieve driver
+            ze_driver_handle_t driverHandle;
+            ZE_CHECK(zeDriverGet(&driverCount, &driverHandle));
+
+            // Create context
+            ze_context_desc_t contextDesc = {};
+            static ze_context_handle_t context;
+            ZE_CHECK(zeContextCreate(driverHandle, &contextDesc, &context));
+
+            // return Py_BuildValue(\"(K)", (uint64_t)context);
+            Py_RETURN_NONE;
+        }
+
+        static PyObject* initDevices(PyObject* self) {
+            // Initialize driver
+            ZE_CHECK(zeInit(ZE_INIT_FLAG_GPU_ONLY));
+            uint32_t driverCount = 0;
+            ZE_CHECK(zeDriverGet(&driverCount, nullptr));
+
+            // Retrieve driver
+            ze_driver_handle_t driverHandle;
+            ZE_CHECK(zeDriverGet(&driverCount, &driverHandle));
+
+            // Create context
+            ze_context_desc_t contextDesc = {};
+            ze_context_handle_t context;
+            ZE_CHECK(zeContextCreate(driverHandle, &contextDesc, &context));
+
+            // Retrieve devices
+            uint32_t deviceCount = 0;
+            ZE_CHECK(zeDeviceGet(driverHandle, &deviceCount, nullptr));
+            static std::vector<ze_device_handle_t> devices(deviceCount);
+            ZE_CHECK(zeDeviceGet(driverHandle, &deviceCount, devices.data()));
+
+            // Default immediate command list of each device
+            static std::vector<ze_command_list_handle_t> queues(deviceCount);
+
+            // return Py_BuildValue(\"(O)", PyArray_SimpleNewFromData(1, &devices.size(), NPY_UINT64, devices.data()));
+            Py_RETURN_NONE;
+        }
+
+        static PyObject* getQueue(PyObject* self, PyObject* args) {
+            int device_id;
+            if(!PyArg_ParseTuple(args, "i", &device_id))
+                return NULL;
+
+            if (device_id > devices.size())
+                return NULL;
+
+            // Get default queue
+            ze_command_list_handle_t queue = queues[device_id];
+            if (queue != NULL) {
+                return Py_BuildValue(\"(K)", (uint64_t)queue);
+            }
+
+            // Create immediate command list
+            ze_device_handle_t device = devices[device_id];
+            uint32_t numQueueGroups = 0;
+            ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups, nullptr));
+            if (numQueueGroups == 0) {
+                return NULL;
+            }
+            std::vector<ze_command_queue_group_properties_t> queueProperties(numQueueGroups);
+            ZE_CHECK(zeDeviceGetCommandQueueGroupProperties(device, &numQueueGroups,
+                                                            queueProperties.data()));
+            uint32_t computeQueueGroupOrdinal = numQueueGroups;
+
+            // Find the compute queue ordinal
+            for (uint32_t i = 0; i < numQueueGroups; i++) {
+                if (queueProperties[i].flags & ZE_COMMAND_QUEUE_GROUP_PROPERTY_FLAG_COMPUTE) {
+                    computeQueueGroupOrdinal = i;
+                    break;
+                }
+            }
+            if (computeQueueGroupOrdinal == numQueueGroups) {
+                return NULL; // no compute queue found
+            }
+
+            ze_command_queue_desc_t cmdQueueDesc = {
+                ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
+                nullptr,
+                computeQUeueGroupOrdinal,
+                0, // index
+                0, // flags
+                ZE_COMMAND_QUEUE_MODE_DEFAULT,
+                ZE_COMMAND_QUEUE_PRIORITY_NORMAL
+            };
+
+            ZE_CHECK(zeCommandListCreateImmediate(context, device, &cmdQueueDesc, &queue));
+            return Py_BuildValue(\"(K)", (uint64_t)queue);
+        }
+
         static PyMethodDef ModuleMethods[] = {
           {"load_binary", loadBinary, METH_VARARGS, "Load provided SPV into ZE driver"},
           {"get_device_properties", getDeviceProperties, METH_VARARGS, "Get the properties for a given device"},
+          {"init_context", initContext, METH_VARARGS, "Initialize the ZE GPU context"},
+          {"init_devices", initDevices, METH_VARARGS, "Initialize the ZE GPU devices"},
+          {"get_queue", getQueue, METH_VARARGS, "Get immediate command list for device_id"},
           {NULL, NULL, 0, NULL} // sentinel
         };
 
@@ -166,3 +277,6 @@ class SpirvUtils(object):
         spec.loader.exec_module(mod)
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
+        self.init_context = mod.init_context
+        self.init_devices = mod.init_devices
+        self.get_queue = mod.get_queue

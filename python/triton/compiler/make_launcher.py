@@ -101,7 +101,7 @@ def generate_launcher(constants, signature):
     format = "iiiiiKKOOO" + ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
 
     # generate glue code
-    if is_hip():
+    if is_spirv():
         src = f"""
     #include <level_zero/ze_api.h>
     #include <Python.h>
@@ -122,20 +122,14 @@ def generate_launcher(constants, signature):
 
     #define ZE_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); if(PyErr_Occurred()) return NULL; }}
 
-    static void _launch(int gridX, int gridY, int gridZ, int num_warps, int shared_memory, ze_command_queue_handle_t queue, ze_kernel_handle_t function, {arg_decls}) {{
+    static void _launch(int gridX, int gridY, int gridZ, int num_warps, int shared_memory, ze_command_list_handle_t queue, ze_kernel_handle_t function, {arg_decls}) {{
       void *params[] = {{ {', '.join(f"&arg{i}" for i in signature.keys() if i not in constants)} }};
 
       if (gridX*gridY*gridZ > 0) {{
         {" ".join(f'zeKernelSetArgumentValue(function, {idx}, sizeof({ty_to_cpp(item)}), params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if i not in constants]))}
         zeKernelSetGroupSize(function, 32*num_warps, 1, 1);
-        ze_command_list_handle_t cmdList;
-        ze_command_list_desc_t cmdListDesc = {};
-        ZE_CHECK(zeCommandListCreate(context, device, &cmdListDesc, &cmdList));
         ze_group_count_t grpCount = {gridX, gridY, gridZ};
-        ZE_CHECK(zeCommandListAppendLaunchKernel(cmdList, function, &grpCount, nullptr, 0, nullptr));
-        ZE_CHECK(zeCommandListClose(cmdList));
-        ZE_CHECK(zeCommandQueueExecuteCommandLists(queue, 1, &cmdList, nullptr));
-        ZE_CHECK(hipModuleLaunchKernel(function, gridX, gridY, gridZ, 64*num_warps, 1, 1, shared_memory, stream, params, 0));
+        ZE_CHECK(zeCommandListAppendLaunchKernel(queue, function, &grpCount, nullptr, 0, nullptr));
       }}
     }}
 

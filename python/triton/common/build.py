@@ -32,7 +32,7 @@ def rocm_path_dir():
 
 @functools.lru_cache()
 def ze_path_dir():
-    return os.getenv("ZE_PATH", default=/usr/local)
+    return os.getenv("ZE_PATH", default="/usr/local")
 
 @contextlib.contextmanager
 def quiet():
