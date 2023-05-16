@@ -15,30 +15,46 @@ import torch
 import triton
 
 
-def get_cuda_stream(idx=None):
+def get_cuda_stream(idx=None, is_spirv=False):
     if idx is None:
-        idx = get_current_device()
-    try:
-        from torch._C import _cuda_getCurrentRawStream
-        return _cuda_getCurrentRawStream(idx)
-    except ImportError:
+        idx = get_current_device(is_spirv)
+    if is_spirv:
+        from driver import get_spirv_utils
+        return get_spirv_utils().get_queue()
+    else:
+        try:
+            from torch._C import _cuda_getCurrentRawStream
+            return _cuda_getCurrentRawStream(idx)
+        except ImportError:
+            import torch
+            return torch.cuda.current_stream(idx).cuda_stream
+
+
+def get_current_device(is_spirv=False):
+    if is_spirv:
+        from driver import get_spirv_utils
+        return get_spirv_utils().get_current_device()
+    else:
         import torch
-        return torch.cuda.current_stream(idx).cuda_stream
+        return torch.cuda.current_device()
 
 
-def get_current_device():
-    import torch
-    return torch.cuda.current_device()
+def set_current_device(idx, is_spirv=False):
+    if is_spirv:
+        from driver import get_spirv_utils
+        return get_spirv_utils().set_current_device(idx)
+    else:
+        import torch
+        torch.cuda.set_device(idx)
 
 
-def set_current_device(idx):
-    import torch
-    torch.cuda.set_device(idx)
-
-
-def get_device_capability(idx):
-    import torch
-    return torch.cuda.get_device_capability(idx)
+def get_device_capability(idx, is_spirv=False):
+    if is_spirv:
+        from driver import get_spirv_utils
+        return get_spirv_utils().get_device_capability(idx)
+    else:
+        import torch
+        return torch.cuda.get_device_capability(idx)
 
 
 T = TypeVar('T')
@@ -296,10 +312,10 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
     grid_1 = grid[1] if grid_size > 1 else 1
     grid_2 = grid[2] if grid_size > 2 else 1
     if device is None:
-        device = get_current_device()
-        set_current_device(device)
+        device = get_current_device(self.is_spirv)
+        set_current_device(device, self.is_spirv)
     if stream is None and not warmup:
-      stream = get_cuda_stream(device)
+      stream = get_cuda_stream(device, self.is_spirv)
     try:
       bin = cache[device][key]
       if not warmup:
@@ -340,6 +356,7 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
         self.fn = fn
         self.module = fn.__module__
         self.version = version
+        self.is_spirv = os.environ.get("TRITON_TARGET_SPIRV", "0") == "1"
         # function signature information
         signature = inspect.signature(fn)
         self.arg_names = [v.name for v in signature.parameters.values()]

@@ -26,6 +26,7 @@
 #include "triton/Target/HSACO/HSACOTranslation.h"
 #include "triton/Target/LLVMIR/LLVMIRTranslation.h"
 #include "triton/Target/PTX/PTXTranslation.h"
+#include "triton/Target/SPIRV/SPIRVTranslation.h"
 #include "triton/Tools/Sys/GetEnv.hpp"
 #include "triton/Tools/Sys/GetPlatform.hpp"
 

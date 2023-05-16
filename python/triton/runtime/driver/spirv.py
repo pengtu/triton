@@ -1,6 +1,7 @@
 import hashlib
 import os
 import tempfile
+import numpy as np
 
 from ...common.build import _build
 from ..cache import get_cache_manager
@@ -147,25 +148,11 @@ class SpirvUtils(object):
             static ze_context_handle_t context;
             ZE_CHECK(zeContextCreate(driverHandle, &contextDesc, &context));
 
-            // return Py_BuildValue(\"(K)", (uint64_t)context);
-            Py_RETURN_NONE;
+            return Py_BuildValue(\"(K)", (uint64_t)context);
+            // Py_RETURN_NONE;
         }
 
         static PyObject* initDevices(PyObject* self) {
-            // Initialize driver
-            ZE_CHECK(zeInit(ZE_INIT_FLAG_GPU_ONLY));
-            uint32_t driverCount = 0;
-            ZE_CHECK(zeDriverGet(&driverCount, nullptr));
-
-            // Retrieve driver
-            ze_driver_handle_t driverHandle;
-            ZE_CHECK(zeDriverGet(&driverCount, &driverHandle));
-
-            // Create context
-            ze_context_desc_t contextDesc = {};
-            ze_context_handle_t context;
-            ZE_CHECK(zeContextCreate(driverHandle, &contextDesc, &context));
-
             // Retrieve devices
             uint32_t deviceCount = 0;
             ZE_CHECK(zeDeviceGet(driverHandle, &deviceCount, nullptr));
@@ -175,8 +162,8 @@ class SpirvUtils(object):
             // Default immediate command list of each device
             static std::vector<ze_command_list_handle_t> queues(deviceCount);
 
-            // return Py_BuildValue(\"(O)", PyArray_SimpleNewFromData(1, &devices.size(), NPY_UINT64, devices.data()));
-            Py_RETURN_NONE;
+            return Py_BuildValue(\"(O)", PyArray_SimpleNewFromData(1, &devices.size(), NPY_UINT64, devices.data()));
+            // Py_RETURN_NONE;
         }
 
         static PyObject* getQueue(PyObject* self, PyObject* args) {
@@ -277,6 +264,21 @@ class SpirvUtils(object):
         spec.loader.exec_module(mod)
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
-        self.init_context = mod.init_context
-        self.init_devices = mod.init_devices
-        self.get_queue = mod.get_queue
+        self.context = mod.init_context()
+        self.devices = mod.init_devices()
+        self.get_queue = mod.get_queue()
+        self.current_device = 0 if self.devices.size > 0 else -1
+
+    def get_current_device(instance):
+        return instance.current_device
+    
+    def set_current_device(instance, idx):
+        assert instance.devices.size > idx, "Device id not found"
+        instance.current_device = idx
+    
+    def get_device_capability(instance, idx):
+        return (0, 0)
+    
+    def get_queue(instance, idx):
+        return instance.get_queue(idx)
+        
