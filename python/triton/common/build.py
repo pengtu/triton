@@ -85,7 +85,14 @@ def _build(name, src, srcdir):
     py_include_dir = sysconfig.get_paths(scheme=scheme)["include"]
 
     if is_spirv():
-        ret = subprocess.check_call([cc, src, f"-I{ze_include_dir}", f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", f"-L{ze_lib_dir}", "-lze_loader", "-o", so])
+        cxx = os.environ.get("CXX")
+        if cxx is None:
+            clangpp = shutil.which("clang++")
+            gpp = shutil.which("g++")
+            cxx = gpp if gpp is not None else clangpp
+        import numpy as np
+        numpy_include_dir = np.get_include()
+        ret = subprocess.check_call([cxx, src, f"-std=c++17", f"-g", f"-I{ze_include_dir}", f"-I{py_include_dir}", f"-I{numpy_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", f"-L{ze_lib_dir}", "-lze_loader", "-o", so])
     elif is_hip():
         ret = subprocess.check_call([cc, src, f"-I{hip_include_dir}", f"-I{py_include_dir}", f"-I{srcdir}", "-shared", "-fPIC", f"-L{hip_lib_dir}", "-lamdhip64", "-o", so])
     else:

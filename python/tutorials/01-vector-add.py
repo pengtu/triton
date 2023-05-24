@@ -15,6 +15,7 @@ In doing so, you will learn about:
 # --------------
 
 import torch
+import intel_extension_for_pytorch as ipex
 
 import triton
 import triton.language as tl
@@ -57,7 +58,7 @@ def add_kernel(
 def add(x: torch.Tensor, y: torch.Tensor):
     # We need to preallocate the output.
     output = torch.empty_like(x)
-    assert x.is_cuda and y.is_cuda and output.is_cuda
+    assert x.is_xpu and y.is_xpu and output.is_xpu
     n_elements = output.numel()
     # The SPMD launch grid denotes the number of kernel instances that run in parallel.
     # It is analogous to CUDA launch grids. It can be either Tuple[int], or Callable(metaparameters) -> Tuple[int].
@@ -78,8 +79,8 @@ def add(x: torch.Tensor, y: torch.Tensor):
 
 torch.manual_seed(0)
 size = 98432
-x = torch.rand(size, device='cuda')
-y = torch.rand(size, device='cuda')
+x = torch.rand(size, device='xpu')
+y = torch.rand(size, device='xpu')
 output_torch = x + y
 output_triton = add(x, y)
 print(output_torch)
@@ -118,8 +119,8 @@ print(
     )
 )
 def benchmark(size, provider):
-    x = torch.rand(size, device='cuda', dtype=torch.float32)
-    y = torch.rand(size, device='cuda', dtype=torch.float32)
+    x = torch.rand(size, device='xpu', dtype=torch.float32)
+    y = torch.rand(size, device='xpu', dtype=torch.float32)
     quantiles = [0.5, 0.2, 0.8]
     if provider == 'torch':
         ms, min_ms, max_ms = triton.testing.do_bench(lambda: x + y, quantiles=quantiles)

@@ -19,8 +19,8 @@ def get_cuda_stream(idx=None, is_spirv=False):
     if idx is None:
         idx = get_current_device(is_spirv)
     if is_spirv:
-        from driver import get_spirv_utils
-        return get_spirv_utils().get_queue()
+        from .driver import get_spirv_utils
+        return get_spirv_utils().get_queue(idx)
     else:
         try:
             from torch._C import _cuda_getCurrentRawStream
@@ -32,7 +32,7 @@ def get_cuda_stream(idx=None, is_spirv=False):
 
 def get_current_device(is_spirv=False):
     if is_spirv:
-        from driver import get_spirv_utils
+        from .driver import get_spirv_utils
         return get_spirv_utils().get_current_device()
     else:
         import torch
@@ -41,7 +41,7 @@ def get_current_device(is_spirv=False):
 
 def set_current_device(idx, is_spirv=False):
     if is_spirv:
-        from driver import get_spirv_utils
+        from .driver import get_spirv_utils
         return get_spirv_utils().set_current_device(idx)
     else:
         import torch
@@ -50,7 +50,7 @@ def set_current_device(idx, is_spirv=False):
 
 def get_device_capability(idx, is_spirv=False):
     if is_spirv:
-        from driver import get_spirv_utils
+        from .driver import get_spirv_utils
         return get_spirv_utils().get_device_capability(idx)
     else:
         import torch

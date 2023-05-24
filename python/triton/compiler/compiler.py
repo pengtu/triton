@@ -98,9 +98,9 @@ def ttgir_to_llir(mod, extern_libs, arch):
         _add_external_libs(mod, extern_libs)
     # TODO: separate tritongpu_to_llvmir for different backends
     if _is_cuda(arch):
-        return _triton.translate_triton_gpu_to_llvmir(mod, arch, False)
+        return _triton.translate_triton_gpu_to_llvmir(mod, arch, False, _is_spirv(arch))
     else:
-        return _triton.translate_triton_gpu_to_llvmir(mod, 0, True)
+        return _triton.translate_triton_gpu_to_llvmir(mod, 0, not _is_spirv(arch), _is_spirv(arch))
 
 
 # PTX translation
@@ -160,7 +160,7 @@ def ptx_to_cubin(ptx: str, arch: int):
     ptxas, _ = path_to_ptxas()
     return _triton.compile_ptx_to_cubin(ptx, ptxas, arch)
 
-def llir_to_spv(mod: Any, arch: int, ptx_version: int = None) -> str:
+def llir_to_spv(mod: Any, arch: int = 0, ptx_version: int = 0) -> str:
     '''
     Translate TritonGPU module to SPIRV bitcode.
     :param mod: a TritonGPU dialect module
@@ -249,6 +249,18 @@ def get_kernel_name(src: str, pattern: str) -> str:
         if line.startswith(pattern):
             return line.split()[-1]
 
+def get_ttir_kernel_name(src: str, pattern: str) -> str:
+    '''
+    Get kernel name from ttir.
+    This Kernel name is required when launching the kernel.
+    '''
+    # This is the original kernel names in Triton IR for SPIRV target.
+    assert src
+    for line in src.split('\n'):
+        line = line.strip()
+        if line.startswith(pattern):
+            name = line.split('@', 1)[-1].split('(', 1)[0]
+            return f"@{name}"
 
 def convert_type_repr(x):
     match = re.search(r'!tt\.ptr<(.*)>', x)
@@ -332,7 +344,9 @@ def _is_spirv(arch):
 
 def get_architecture_descriptor(capability):
     if capability is None:
-        if torch.version.hip is None:
+        if os.environ.get("TRITON_TARGET_SPIRV", "0") == "1" :
+            capability = "spirv"
+        elif torch.version.hip is None:
             device = triton.runtime.jit.get_current_device()
             capability = triton.runtime.jit.get_device_capability(device)
             capability = capability[0] * 10 + capability[1]
@@ -359,7 +373,7 @@ def add_rocm_stages(arch, extern_libs, stages):
 
 def add_spirv_stages(arch, extern_libs, stages) :
     stages["spv"] = (lambda path: Path(path).read_text(),
-                     lambda src: llir_to_spv)
+                     lambda src: llir_to_spv(src))
     
 def add_cuda_stages(arch, extern_libs, stages):
 
@@ -489,8 +503,9 @@ def compile(fn, **kwargs):
             asm[ir] = next_module
         elif ir == "amdgcn":
             asm[ir] = str(next_module[0])
-        else:
-            asm[ir] = str(next_module)
+        elif ir == "spv":
+            asm[ir] = next_module
+
         if ir == "llir" and "shared" not in metadata:
             metadata["shared"] = _triton.get_shared_memory_size(module)
         if ir == "ptx":
@@ -498,12 +513,15 @@ def compile(fn, **kwargs):
         if ir == "amdgcn":
             metadata["name"] = get_kernel_name(next_module[0], pattern='.globl')
             asm["hsaco_path"] = next_module[1]
+        if ir == "ttir" and is_spirv:
+            metadata["name"] = get_ttir_kernel_name(str(next_module), pattern='tt.func public')
         module = next_module
     # write-back metadata, if it didn't come from the cache
     if metadata_path is None:
         metadata_group[metadata_filename] = fn_cache_manager.put(json.dumps(metadata), metadata_filename, binary=False)
         fn_cache_manager.put_group(metadata_filename, metadata_group)
-
+    # print(asm)
+    # print(metadata)
     # return handle to compiled kernel
     return CompiledKernel(fn, so_path, metadata, asm)
 
@@ -541,7 +559,7 @@ class CompiledKernel:
     def _init_handles(self):
         if self.cu_module is not None:
             return
-        device = triton.runtime.jit.get_current_device()
+        device = triton.runtime.jit.get_current_device(self.is_spirv)
         if self.is_spirv:
             spirv_utils = get_spirv_utils()
             max_shared = spirv_utils.get_device_properties(device)["max_shared_mem"]

@@ -27,17 +27,29 @@ class SpirvUtils(object):
     @staticmethod
     def _generate_src():
         return """
+        #include <cstddef>
+        #include <string>
+        #include <vector>
+        #include <iostream>
         #include <level_zero/ze_api.h>
 
-        #define PY_SSIZE_T_CLEAN
+        #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
         #include <Python.h>
+        #include <numpy/arrayobject.h>
+
+        static ze_context_handle_t context = {nullptr};
+        static ze_driver_handle_t driverHandle = {nullptr};
+        
+        static std::vector<ze_device_handle_t> devices;
+        // Default immediate command list of each device
+        static std::vector<ze_command_list_handle_t> queues;
 
         static inline void gpuAssert(ze_result_t code, const char *file, int line)
         {
            if (code != ZE_RESULT_SUCCESS)
            {
               const char* prefix = "Triton Error [ZE]: ";
-              const char* str = to_string(code).str();
+              const char* str = std::to_string(code).c_str();
               char err[1024] = {0};
               strcat(err, prefix);
               strcat(err, str);
@@ -52,8 +64,10 @@ class SpirvUtils(object):
             if(!PyArg_ParseTuple(args, "i", &device_id))
                 return NULL;
 
-            if (device_id > devices.size())
+            if (device_id > devices.size()) {
+                std::cout << "Device ID not found: " << device_id << std::endl;
                 return NULL;
+            }
 
             // Get device handle
             ze_device_handle_t phDevice = devices[device_id];
@@ -82,7 +96,7 @@ class SpirvUtils(object):
             zeDeviceGetMemoryProperties(phDevice, &memoryCount, pMemoryProperties);
             // for( uint32_t mem = 0; mem < memoryCount; ++mem )
             // {
-            //    std::cout << to_string( pMemoryProperties[ mem ] ) << "\n";
+            //    std::cout << to_string( pMemoryProperties[ mem ] ) << std::endl;
             // }
 
             int mem_clock_rate = pMemoryProperties[0].maxClockRate;
@@ -99,17 +113,19 @@ class SpirvUtils(object):
 
         static PyObject* loadBinary(PyObject* self, PyObject* args) {
             const char* name;
-            const char* data;
-            Py_ssize_t data_size;
+            uint8_t* data;
             int shared;
             int device_id;
-            if(!PyArg_ParseTuple(args, "ss#ii", &name, &data, &data_size, &shared, &device_id)) {
+            if(!PyArg_ParseTuple(args, "ss#ii", &name, &data, &shared, &device_id)) {
+                std::cout << "loadBinary arg parse failed" << std::endl;
                 return NULL;
             }
 
             if (device_id > devices.size()) {
+                std::cout << "Device ID not found: " << device_id << std::endl;
                 return NULL;
             }
+
             ze_device_handle_t device = devices[device_id];
 
             int32_t n_regs = 0;
@@ -117,52 +133,66 @@ class SpirvUtils(object):
 
             ze_module_desc_t module_desc = {};
             module_desc.format = ZE_MODULE_FORMAT_IL_SPIRV;
-            module_desc.inputSize = data_size;
+            module_desc.inputSize = sizeof(data);
             module_desc.pInputModule = data;
-            ze_module_handle_t mod;
+            ze_module_handle_t module;
+            std::cout << "input size: " << module_desc.inputSize << std::endl;
             ZE_CHECK(zeModuleCreate(context, device, &module_desc, &module, nullptr));
 
+            std::cout << "loadBinary zeModuleCreated" << std::endl;
             ze_kernel_desc_t kernel_desc = {};
             kernel_desc.pKernelName = name;
             ze_kernel_handle_t fun;
             ZE_CHECK(zeKernelCreate(module, &kernel_desc, &fun));
 
+            std::cout << "loadBinary zeKernelCreated" << std::endl;
+
             if(PyErr_Occurred()) {
+              std::cout << "loadBinary error occurred" << std::endl;
               return NULL;
             }
-            return Py_BuildValue("(KKii)", (uint64_t)mod, (uint64_t)fun, n_regs, n_spills);
+
+            std::cout << "loadBinary success!" << std::endl;
+            return Py_BuildValue("(KKii)", (uint64_t)module, (uint64_t)fun, n_regs, n_spills);
         }
 
-        static PyObject* initContext(PyObject* self) {
+        static PyObject* initContext(PyObject* self, PyObject* args) {
             // Initialize driver
             ZE_CHECK(zeInit(ZE_INIT_FLAG_GPU_ONLY));
             uint32_t driverCount = 0;
             ZE_CHECK(zeDriverGet(&driverCount, nullptr));
 
             // Retrieve driver
-            ze_driver_handle_t driverHandle;
             ZE_CHECK(zeDriverGet(&driverCount, &driverHandle));
 
             // Create context
             ze_context_desc_t contextDesc = {};
-            static ze_context_handle_t context;
             ZE_CHECK(zeContextCreate(driverHandle, &contextDesc, &context));
 
-            return Py_BuildValue(\"(K)", (uint64_t)context);
+            return Py_BuildValue("(K)", (uint64_t)context);
             // Py_RETURN_NONE;
         }
 
-        static PyObject* initDevices(PyObject* self) {
+        static PyObject* initDevices(PyObject* self, PyObject *args) {
             // Retrieve devices
             uint32_t deviceCount = 0;
             ZE_CHECK(zeDeviceGet(driverHandle, &deviceCount, nullptr));
-            static std::vector<ze_device_handle_t> devices(deviceCount);
+            // std::cout << "Device count is: " << deviceCount << std::endl;
+            for (uint32_t i = 0; i < deviceCount; ++i) {
+                devices.push_back(nullptr);
+                queues.push_back(nullptr);
+            }
             ZE_CHECK(zeDeviceGet(driverHandle, &deviceCount, devices.data()));
-
-            // Default immediate command list of each device
-            static std::vector<ze_command_list_handle_t> queues(deviceCount);
-
-            return Py_BuildValue(\"(O)", PyArray_SimpleNewFromData(1, &devices.size(), NPY_UINT64, devices.data()));
+            
+            // npy_intp dims[1];
+            // dims[0] = deviceCount;
+            // std::cout << "Before PyArray_SimpleNewFromData: " << devices.size() << " " << devices.data()[0] << std::endl;
+            // PyObject* arr = PyArray_SimpleNewFromData(1, dims, NPY_UINT64, reinterpret_cast<void*>(devices.data()));
+            // std::cout << "After PyArray_SimpleNewFromData: " << devices.data()[0] << std::endl;
+            // PyObject* ret = Py_BuildValue("(O)", arr);
+            // std::cout << "After Py_BuildValue" << std::endl;
+            // return ret;
+            return Py_BuildValue("(i)", deviceCount);
             // Py_RETURN_NONE;
         }
 
@@ -177,7 +207,7 @@ class SpirvUtils(object):
             // Get default queue
             ze_command_list_handle_t queue = queues[device_id];
             if (queue != NULL) {
-                return Py_BuildValue(\"(K)", (uint64_t)queue);
+                return Py_BuildValue("(K)", (uint64_t)queue);
             }
 
             // Create immediate command list
@@ -206,7 +236,7 @@ class SpirvUtils(object):
             ze_command_queue_desc_t cmdQueueDesc = {
                 ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC,
                 nullptr,
-                computeQUeueGroupOrdinal,
+                computeQueueGroupOrdinal,
                 0, // index
                 0, // flags
                 ZE_COMMAND_QUEUE_MODE_DEFAULT,
@@ -214,21 +244,21 @@ class SpirvUtils(object):
             };
 
             ZE_CHECK(zeCommandListCreateImmediate(context, device, &cmdQueueDesc, &queue));
-            return Py_BuildValue(\"(K)", (uint64_t)queue);
+            return Py_BuildValue("(K)", (uint64_t)queue);
         }
 
         static PyMethodDef ModuleMethods[] = {
           {"load_binary", loadBinary, METH_VARARGS, "Load provided SPV into ZE driver"},
           {"get_device_properties", getDeviceProperties, METH_VARARGS, "Get the properties for a given device"},
-          {"init_context", initContext, METH_VARARGS, "Initialize the ZE GPU context"},
-          {"init_devices", initDevices, METH_VARARGS, "Initialize the ZE GPU devices"},
+          {"init_context", initContext, METH_NOARGS, "Initialize the ZE GPU context"},
+          {"init_devices", initDevices, METH_NOARGS, "Initialize the ZE GPU devices and return device count"},
           {"get_queue", getQueue, METH_VARARGS, "Get immediate command list for device_id"},
           {NULL, NULL, 0, NULL} // sentinel
         };
 
         static struct PyModuleDef ModuleDef = {
           PyModuleDef_HEAD_INIT,
-          \"spirv_utils\",
+          "spirv_utils",
           NULL, //documentation
           -1, //size
           ModuleMethods
@@ -252,7 +282,7 @@ class SpirvUtils(object):
         cache_path = cache.get_file(fname)
         if cache_path is None:
             with tempfile.TemporaryDirectory() as tmpdir:
-                src_path = os.path.join(tmpdir, "main.c")
+                src_path = os.path.join(tmpdir, "main.cpp")
                 with open(src_path, "w") as f:
                     f.write(src)
                 so = _build("spirv_utils", src_path, tmpdir)
@@ -264,16 +294,16 @@ class SpirvUtils(object):
         spec.loader.exec_module(mod)
         self.load_binary = mod.load_binary
         self.get_device_properties = mod.get_device_properties
+        self.get_queue = mod.get_queue
         self.context = mod.init_context()
-        self.devices = mod.init_devices()
-        self.get_queue = mod.get_queue()
-        self.current_device = 0 if self.devices.size > 0 else -1
+        self.device_count = mod.init_devices()
+        self.current_device = 0 if self.device_count[0] > 0 else -1
 
     def get_current_device(instance):
         return instance.current_device
     
     def set_current_device(instance, idx):
-        assert instance.devices.size > idx, "Device id not found"
+        assert instance.device_count[0] > idx, "Device id not found"
         instance.current_device = idx
     
     def get_device_capability(instance, idx):

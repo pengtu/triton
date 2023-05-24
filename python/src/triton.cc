@@ -1575,7 +1575,7 @@ void init_triton_translation(py::module &m) {
 
   m.def(
       "translate_llvmir_to_spirv",
-      [](const std::string llvmIR, int capability, int version) -> std::string {
+      [](const std::string llvmIR) -> std::string {
         py::gil_scoped_release allow_threads;
         // create LLVM module from C++
         llvm::LLVMContext context;

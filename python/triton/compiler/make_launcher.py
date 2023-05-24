@@ -13,7 +13,7 @@ def is_hip():
 
 # FIX ME
 def is_spirv():
-    return True
+    return os.environ.get("TRITON_TARGET_SPIRV", "0") == "1"
 
 # ----- stub --------
 
@@ -36,7 +36,7 @@ def make_stub(name, signature, constants):
     if cache_path is None:
         with tempfile.TemporaryDirectory() as tmpdir:
             src = generate_launcher(constants, signature)
-            src_path = os.path.join(tmpdir, "main.c")
+            src_path = os.path.join(tmpdir, "main.cpp" if is_spirv() else "main.c")
             with open(src_path, "w") as f:
                 f.write(src)
             so = _build(name, src_path, tmpdir)
@@ -103,16 +103,21 @@ def generate_launcher(constants, signature):
     # generate glue code
     if is_spirv():
         src = f"""
+    #include <cstddef>
+    #include <string>
+    #include <iostream>
     #include <level_zero/ze_api.h>
+
+    #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
     #include <Python.h>
-    #include <stdio.h>
+    #include <numpy/arrayobject.h>
 
     static inline void gpuAssert(ze_result_t code, const char *file, int line)
     {{
       if (code != ZE_RESULT_SUCCESS)
       {{
          const char* prefix = "Triton Error [ZE]: ";
-         const char* str = to_string(code).str();
+         const char* str = std::to_string(code).c_str();
          char err[1024] = {{0}};
          strcat(err, prefix);
          strcat(err, str);
@@ -120,15 +125,15 @@ def generate_launcher(constants, signature):
       }}
     }}
 
-    #define ZE_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); if(PyErr_Occurred()) return NULL; }}
+    #define ZE_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); }}
 
-    static void _launch(int gridX, int gridY, int gridZ, int num_warps, int shared_memory, ze_command_list_handle_t queue, ze_kernel_handle_t function, {arg_decls}) {{
+    static void _launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int shared_memory, ze_command_list_handle_t queue, ze_kernel_handle_t function, {arg_decls}) {{
       void *params[] = {{ {', '.join(f"&arg{i}" for i in signature.keys() if i not in constants)} }};
 
       if (gridX*gridY*gridZ > 0) {{
         {" ".join(f'zeKernelSetArgumentValue(function, {idx}, sizeof({ty_to_cpp(item)}), params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if i not in constants]))}
         zeKernelSetGroupSize(function, 32*num_warps, 1, 1);
-        ze_group_count_t grpCount = {gridX, gridY, gridZ};
+        ze_group_count_t grpCount = {{gridX, gridY, gridZ}};
         ZE_CHECK(zeCommandListAppendLaunchKernel(queue, function, &grpCount, nullptr, 0, nullptr));
       }}
     }}
@@ -143,7 +148,7 @@ def generate_launcher(constants, signature):
       ptr_info.dev_ptr = 0;
       ptr_info.valid = true;
       if (PyLong_Check(obj)) {{
-        ptr_info.dev_ptr = PyLong_AsUnsignedLongLong(obj);
+        ptr_info.dev_ptr = (void*) PyLong_AsUnsignedLongLong(obj);
         return ptr_info;
       }}
       if (obj == Py_None) {{
@@ -161,7 +166,7 @@ def generate_launcher(constants, signature):
           ptr_info.valid = false;
           return ptr_info;
         }}
-        ptr_info.dev_ptr = PyLong_AsUnsignedLongLong(ret);
+        ptr_info.dev_ptr = (void*) PyLong_AsUnsignedLongLong(ret);
         if(!ptr_info.dev_ptr)
           return ptr_info;
         //uint64_t dev_ptr;
@@ -202,7 +207,7 @@ def generate_launcher(constants, signature):
       // raise exception asap
         // raise exception asap
       {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-      _launch(gridX, gridY, gridZ, num_warps, shared_memory, (ze_command_queue_handle_t)_stream, (ze_kernel_handle_t)_function, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+      _launch(gridX, gridY, gridZ, num_warps, shared_memory, (ze_command_list_handle_t)_stream, (ze_kernel_handle_t)_function, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
       
       if (launch_exit_hook != Py_None) {{
         PyObject_CallObject(launch_exit_hook, args);
