@@ -1575,7 +1575,7 @@ void init_triton_translation(py::module &m) {
 
   m.def(
       "translate_llvmir_to_spirv",
-      [](const std::string llvmIR) -> std::string {
+      [](const std::string llvmIR) -> py::object {
         py::gil_scoped_release allow_threads;
         // create LLVM module from C++
         llvm::LLVMContext context;
@@ -1591,11 +1591,11 @@ void init_triton_translation(py::module &m) {
         }
 
         // translate module to SPIRV
-        auto spirvBitcode =
+        std::string spirvBitcode =
             triton::translateLLVMIRToSPIRV(*module);
-        return spirvBitcode;
-      },
-      ret::take_ownership);
+        py::bytes bytes(spirvBitcode);
+        return std::move(bytes);
+      });
 
   m.def(
       "translate_llvmir_to_ptx",

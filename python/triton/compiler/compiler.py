@@ -160,13 +160,13 @@ def ptx_to_cubin(ptx: str, arch: int):
     ptxas, _ = path_to_ptxas()
     return _triton.compile_ptx_to_cubin(ptx, ptxas, arch)
 
-def llir_to_spv(mod: Any, arch: int = 0, ptx_version: int = 0) -> str:
+def llir_to_spv(mod: Any, arch: int = 0, ptx_version: int = 0):
     '''
     Translate TritonGPU module to SPIRV bitcode.
     :param mod: a TritonGPU dialect module
     :return: SPRIV bitcode
     '''
-    return _triton.translate_llvmir_to_spirv(mod, arch, ptx_version)
+    return _triton.translate_llvmir_to_spirv(mod)
 
 # AMDGCN translation
 
@@ -259,8 +259,7 @@ def get_ttir_kernel_name(src: str, pattern: str) -> str:
     for line in src.split('\n'):
         line = line.strip()
         if line.startswith(pattern):
-            name = line.split('@', 1)[-1].split('(', 1)[0]
-            return f"@{name}"
+            return line.split('@', 1)[-1].split('(', 1)[0]
 
 def convert_type_repr(x):
     match = re.search(r'!tt\.ptr<(.*)>', x)
@@ -372,7 +371,7 @@ def add_rocm_stages(arch, extern_libs, stages):
                                                              gfx_arch_full_details[2]))
 
 def add_spirv_stages(arch, extern_libs, stages) :
-    stages["spv"] = (lambda path: Path(path).read_text(),
+    stages["spv"] = (lambda path: Path(path).read_bytes(),
                      lambda src: llir_to_spv(src))
     
 def add_cuda_stages(arch, extern_libs, stages):
@@ -525,7 +524,6 @@ def compile(fn, **kwargs):
     # return handle to compiled kernel
     return CompiledKernel(fn, so_path, metadata, asm)
 
-
 class CompiledKernel:
 
     # Hooks for external tools to monitor the execution of triton kernels
@@ -566,7 +564,7 @@ class CompiledKernel:
             if self.shared > max_shared:
                 raise OutOfResources(self.shared, max_shared, "shared memory")
             mod, func, n_regs, n_spills = spirv_utils.load_binary(self.metadata["name"], self.asm["spv"], self.shared, device)
-        if self.is_hip:
+        elif self.is_hip:
             hip_utils = get_hip_utils()
             max_shared = hip_utils.get_device_properties(device)["max_shared_mem"]
             if self.shared > max_shared:

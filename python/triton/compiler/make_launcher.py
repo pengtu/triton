@@ -17,14 +17,12 @@ def is_spirv():
 
 # ----- stub --------
 
-
 def make_so_cache_key(version_hash, signature, constants):
     # Get unique key for the compiled code
     signature = {k: 'ptr' if v[0] == '*' else v for k, v in signature.items()}
     key = f"{version_hash}-{''.join(signature.values())}{constants}"
     key = hashlib.md5(key.encode("utf-8")).hexdigest()
     return key
-
 
 def make_stub(name, signature, constants):
     # name of files that are cached
@@ -66,13 +64,12 @@ def ty_to_cpp(ty):
         "fp64": "double",
     }[ty]
 
-
 def generate_launcher(constants, signature):
     arg_decls = ', '.join(f"{ty_to_cpp(ty)} arg{i}" for i, ty in signature.items())
 
     def _extracted_type(ty):
         if ty[0] == '*':
-            return "PyObject*"
+            return "void*" if is_spirv() else "PyObject*"
         return {
             'i1': 'int32_t',
             'i32': 'int32_t',
@@ -89,6 +86,7 @@ def generate_launcher(constants, signature):
     def format_of(ty):
         return {
             "PyObject*": "O",
+            "void*" : "K",
             "float": "f",
             "double": "d",
             "long": "l",
@@ -106,10 +104,12 @@ def generate_launcher(constants, signature):
     #include <cstddef>
     #include <string>
     #include <iostream>
+    #include <iomanip>
     #include <level_zero/ze_api.h>
 
     #define NPY_NO_DEPRECATED_API NPY_1_7_API_VERSION
     #include <Python.h>
+    #include <stdio.h>
     #include <numpy/arrayobject.h>
 
     static inline void gpuAssert(ze_result_t code, const char *file, int line)
@@ -147,8 +147,14 @@ def generate_launcher(constants, signature):
       DevicePtrInfo ptr_info;
       ptr_info.dev_ptr = 0;
       ptr_info.valid = true;
+      std::cout << "!!!Inside getPointer, obj ptr is" << std::endl;
+      std::cout << std::hex << obj << std::endl;
+      PyTypeObject* obj_type = Py_TYPE(obj);
+      std::cout << "Object Type is " << obj_type->tp_name << std::endl;
+
       if (PyLong_Check(obj)) {{
         ptr_info.dev_ptr = (void*) PyLong_AsUnsignedLongLong(obj);
+        std::cout << "Passed PyLong_Check and return" << std::endl;
         return ptr_info;
       }}
       if (obj == Py_None) {{
@@ -157,6 +163,8 @@ def generate_launcher(constants, signature):
       }}
       PyObject *ptr = PyObject_GetAttrString(obj, "data_ptr");
       if(ptr){{
+        std::cout << "!!!data_ptr is not NULL" << std::endl;
+        std::cout << std::hex << ptr << std::endl;
         PyObject *empty_tuple = PyTuple_New(0);
         PyObject *ret = PyObject_Call(ptr, empty_tuple, NULL);
         Py_DECREF(empty_tuple);
@@ -167,19 +175,15 @@ def generate_launcher(constants, signature):
           return ptr_info;
         }}
         ptr_info.dev_ptr = (void*) PyLong_AsUnsignedLongLong(ret);
-        if(!ptr_info.dev_ptr)
-          return ptr_info;
-        //uint64_t dev_ptr;
-        //int status = cuPointerGetAttribute(&dev_ptr, CU_POINTER_ATTRIBUTE_DEVICE_POINTER, ptr_info.dev_ptr);
-        //if (status == CUDA_ERROR_INVALID_VALUE) {{
-        //    PyErr_Format(PyExc_ValueError,
-        //                "Pointer argument (at %d) cannot be accessed from Triton (cpu tensor?)", idx);
-        //    ptr_info.valid = false;
-        //}}
-        //ptr_info.dev_ptr = dev_ptr;
+        if(!ptr_info.dev_ptr) {{
+          return ptr_info;        
+        }}
         Py_DECREF(ret);  // Thanks ChatGPT!
+        std::cout << "!!!dev_ptr" << std::endl;
+        std::cout << std::hex << ptr_info.dev_ptr << std::endl;        
         return ptr_info;
       }}
+      std::cout << "!!!data_ptr is NULL" << std::endl;
       PyErr_SetString(PyExc_TypeError, "Pointer argument must be either uint64 or have data_ptr method");
       return ptr_info;
     }}
@@ -194,7 +198,8 @@ def generate_launcher(constants, signature):
       PyObject *launch_enter_hook = NULL;
       PyObject *launch_exit_hook = NULL;
       PyObject *compiled_kernel = NULL;
-
+      std::cout<< "!!!inside launch" << std::endl;
+      
       {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
       if (!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &num_warps, &shared_memory, &_stream, &_function, &launch_enter_hook, &launch_exit_hook, &compiled_kernel, {', '.join(f"&_arg{i}" for i, ty in signature.items())})) {{
         return NULL;
@@ -204,11 +209,12 @@ def generate_launcher(constants, signature):
         PyObject_CallObject(launch_enter_hook, args);
       }}
 
+      std::cout<< "!!!before calling _launch" << std::endl;
       // raise exception asap
-        // raise exception asap
-      {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
-      _launch(gridX, gridY, gridZ, num_warps, shared_memory, (ze_command_list_handle_t)_stream, (ze_kernel_handle_t)_function, {', '.join(f"ptr_info{i}.dev_ptr" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
-      
+      // {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
+      // std::cout << "!!!done _launch parameter setup" << std::endl;
+      _launch(gridX, gridY, gridZ, num_warps, shared_memory, (ze_command_list_handle_t)_stream, (ze_kernel_handle_t)_function, {', '.join(f"(void *) _arg{i}" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+
       if (launch_exit_hook != Py_None) {{
         PyObject_CallObject(launch_exit_hook, args);
       }}
@@ -281,7 +287,7 @@ def generate_launcher(constants, signature):
       ptr_info.dev_ptr = 0;
       ptr_info.valid = true;
 
-      if (PyLong_Check(obj)) {{
+      if (PyLong_Check(obj)) {{   
         ptr_info.dev_ptr = (hipDeviceptr_t)PyLong_AsUnsignedLongLong(obj);
         return ptr_info;
       }}
@@ -515,4 +521,5 @@ PyMODINIT_FUNC PyInit___triton_launcher(void) {{
   return m;
 }}
 """
+    print(src)
     return src

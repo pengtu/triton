@@ -113,13 +113,16 @@ class SpirvUtils(object):
 
         static PyObject* loadBinary(PyObject* self, PyObject* args) {
             const char* name;
-            uint8_t* data;
             int shared;
+            PyObject *py_bytes;
             int device_id;
-            if(!PyArg_ParseTuple(args, "ss#ii", &name, &data, &shared, &device_id)) {
+            if(!PyArg_ParseTuple(args, "sSii", &name, &py_bytes, &shared, &device_id)) {
                 std::cout << "loadBinary arg parse failed" << std::endl;
                 return NULL;
             }
+
+            // uint8_t* data = (uint8_t*) PyBytes_AsString(py_bytes);
+            // int data_size = PyBytes_Size(py_bytes);
 
             if (device_id > devices.size()) {
                 std::cout << "Device ID not found: " << device_id << std::endl;
@@ -133,19 +136,19 @@ class SpirvUtils(object):
 
             ze_module_desc_t module_desc = {};
             module_desc.format = ZE_MODULE_FORMAT_IL_SPIRV;
-            module_desc.inputSize = sizeof(data);
-            module_desc.pInputModule = data;
+            module_desc.inputSize = PyBytes_Size(py_bytes);
+            module_desc.pInputModule = (uint8_t*) PyBytes_AsString(py_bytes);
             ze_module_handle_t module;
-            std::cout << "input size: " << module_desc.inputSize << std::endl;
+            // std::cout << "SPIRV binary size: " << module_desc.inputSize << std::endl;
             ZE_CHECK(zeModuleCreate(context, device, &module_desc, &module, nullptr));
 
-            std::cout << "loadBinary zeModuleCreated" << std::endl;
+            // std::cout << "loadBinary zeModuleCreated" << std::endl;
             ze_kernel_desc_t kernel_desc = {};
             kernel_desc.pKernelName = name;
             ze_kernel_handle_t fun;
             ZE_CHECK(zeKernelCreate(module, &kernel_desc, &fun));
 
-            std::cout << "loadBinary zeKernelCreated" << std::endl;
+            // std::cout << "loadBinary zeKernelCreated" << std::endl;
 
             if(PyErr_Occurred()) {
               std::cout << "loadBinary error occurred" << std::endl;
@@ -310,5 +313,5 @@ class SpirvUtils(object):
         return (0, 0)
     
     def get_queue(instance, idx):
-        return instance.get_queue(idx)
+        return instance.get_queue(idx)[0]
         

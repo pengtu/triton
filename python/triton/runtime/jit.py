@@ -9,8 +9,10 @@ import subprocess
 import textwrap
 from collections import defaultdict, namedtuple
 from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, cast, overload
+from log_calls import log_calls
 
 import torch
+import intel_extension_for_pytorch as ipex
 
 import triton
 
@@ -20,7 +22,7 @@ def get_cuda_stream(idx=None, is_spirv=False):
         idx = get_current_device(is_spirv)
     if is_spirv:
         from .driver import get_spirv_utils
-        return get_spirv_utils().get_queue(idx)
+        return get_spirv_utils().get_queue(idx)[0]
     else:
         try:
             from torch._C import _cuda_getCurrentRawStream
@@ -136,7 +138,6 @@ def version_key():
         ptxas_version = ''
     return '-'.join(triton.__version__) + '-' + ptxas_version + '-' + '-'.join(contents)
 
-
 class KernelInterface(Generic[T]):
     run: T
 
@@ -147,7 +148,6 @@ class KernelInterface(Generic[T]):
         memorizes the grid.
         """
         return cast(T, functools.partial(cast(Callable, self.run), grid=grid))
-
 
 class JITFunction(KernelInterface[T]):
 
@@ -278,10 +278,22 @@ class JITFunction(KernelInterface[T]):
         else:
             return f'_key_of({arg})'
 
+    def _get_arg_data_ptr(self, arg) -> str:
+        arg_annotation = self.__annotations__.get(arg, None)
+        if not arg_annotation:
+            return f'{arg}.data_ptr()+(1<<64) if hasattr({arg}, "data_ptr") else {arg}'
+        elif arg_annotation is torch.Tensor:
+            return f'{arg}.data_ptr()+(1<<64)'
+        else:
+            return f'{arg}'
+
     def _make_launcher(self):
         regular_args = [f'{arg}' for i, arg in enumerate(self.arg_names) if i not in self.constexprs]
         constexpr_args = [f'{arg}' for i, arg in enumerate(self.arg_names) if i in self.constexprs]
         args = ', '.join(regular_args)
+        print(args)
+        data_ptr_args = ', '.join([self._get_arg_data_ptr(arg) for arg in regular_args])
+        print(data_ptr_args)
         # cache key for regular argument type
         sig_keys = ', '.join([self._get_arg_sig_key(arg) for arg in regular_args])
         # cache key for constexpr argument values
@@ -298,6 +310,8 @@ class JITFunction(KernelInterface[T]):
 
         src = f"""
 def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stages=3, extern_libs=None, stream=None, warmup=False, device=None):
+    #import pdb
+    #pdb.set_trace()
     sig_key =  {sig_keys},
     constexpr_key = {f'{constexpr_keys},' if len(constexpr_keys) > 0 else ()}
     spec_key = {f'{spec_keys},' if len(spec_keys) > 0 else ()}
@@ -314,33 +328,56 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
     if device is None:
         device = get_current_device(self.is_spirv)
         set_current_device(device, self.is_spirv)
+    #print("!!!deivce is")
+    #print(device)       
     if stream is None and not warmup:
       stream = get_cuda_stream(device, self.is_spirv)
+    #print("!!!stream is")
+    #print(stream) 
     try:
       bin = cache[device][key]
       if not warmup:
-          bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, {args})
+          bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, {data_ptr_args})
       return bin
     # kernel not cached -- compile
     except KeyError:
       # build dict of constant values
+      print("!!!!!inside except KeyError")
       args = [{args}]
+      # print(args)
       all_args = {', '.join([f'{arg}' for arg in self.arg_names])},
+      # print(all_args)
       configs = self._get_config(*all_args),
+      # print(configs)
       constants = self._make_constants(constexpr_key)
       constants.update({{i: None for i, arg in enumerate(all_args) if arg is None}})
       constants.update({{i: 1 for i in configs[0].equal_to_1}})
+      # print(constants)
       # build kernel signature -- doesn't include specialized arguments
       signature = {{ i: self._type_of(_key_of(arg)) for i, arg in enumerate(all_args) if i not in self.constexprs }}
+      print(signature)
       # build stub signature -- includes arguments that are specialized
       for i, arg in constants.items():
         if callable(arg):
           raise TypeError(f"Callable constexpr at index {{i}} is not supported")
       if not self._call_hook(key, signature, device, constants, num_warps, num_stages, extern_libs, configs):
         bin = triton.compile(self, signature=signature, device=device, constants=constants, num_warps=num_warps, num_stages=num_stages, extern_libs=extern_libs, configs=configs, debug=self.debug)
+        print("!!!!after triton.compile")
+        print(bin)
         if not warmup:
-            bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, *args)
+            print("!!!calling bin.c_wrapper")
+            #import pdb
+            #pdb.set_trace()
+            #for i, ty in signature.items():
+            #    args1[i] = args[i].data_ptr() if ty[0] == "*" else args[i]
+            #print(args1)
+            temp = [{data_ptr_args}]
+            for index, item in enumerate(temp):
+                print(index, hex(item))
+            bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, {data_ptr_args})
+            print("!!!after calling bin.c_wrapper")
         self.cache[device][key] = bin
+        print("!!!!return bin")
         return bin
       return None
 """
@@ -349,6 +386,7 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
                  "cache": self.cache, "triton": triton,
                  "get_current_device": get_current_device,
                  "set_current_device": set_current_device}
+        print(src)
         exec(src, scope)
         return scope[self.fn.__name__]
 
@@ -434,11 +472,9 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
 # `jit` decorator
 # -----------------------------------------------------------------------------
 
-
 @overload
 def jit(fn: T) -> JITFunction[T]:
     ...
-
 
 @overload
 def jit(
@@ -448,7 +484,6 @@ def jit(
     debug: Optional[bool] = None,
 ) -> Callable[[T], JITFunction[T]]:
     ...
-
 
 def jit(
     fn: Optional[T] = None,
