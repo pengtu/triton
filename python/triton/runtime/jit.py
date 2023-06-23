@@ -31,7 +31,13 @@ def get_cuda_stream(idx=None, is_spirv=False):
             import torch
             return torch.cuda.current_stream(idx).cuda_stream
 
-
+def get_event_pool(is_spirv=True):
+    if is_spirv:
+        from .driver import get_spirv_utils
+        return get_spirv_utils().get_event_pool()
+    else:
+        return 0
+    
 def get_current_device(is_spirv=False):
     if is_spirv:
         from .driver import get_spirv_utils
@@ -325,6 +331,9 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
     grid_0 = grid[0]
     grid_1 = grid[1] if grid_size > 1 else 1
     grid_2 = grid[2] if grid_size > 2 else 1
+    print(grid_0)
+    print(grid_1)
+    print(grid_2)
     if device is None:
         device = get_current_device(self.is_spirv)
         set_current_device(device, self.is_spirv)
@@ -334,10 +343,11 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
       stream = get_cuda_stream(device, self.is_spirv)
     #print("!!!stream is")
     #print(stream) 
+    event_pool = get_event_pool(self.is_spirv)
     try:
       bin = cache[device][key]
       if not warmup:
-          bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, {data_ptr_args})
+          bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, event_pool, {data_ptr_args})
       return bin
     # kernel not cached -- compile
     except KeyError:
@@ -374,7 +384,7 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
             temp = [{data_ptr_args}]
             for index, item in enumerate(temp):
                 print(index, hex(item))
-            bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, {data_ptr_args})
+            bin.c_wrapper(grid_0, grid_1, grid_2, bin.num_warps, bin.shared, stream, bin.cu_function, triton.compiler.CompiledKernel.launch_enter_hook, triton.compiler.CompiledKernel.launch_exit_hook, bin, event_pool, {data_ptr_args})
             print("!!!after calling bin.c_wrapper")
         self.cache[device][key] = bin
         print("!!!!return bin")
@@ -385,8 +395,9 @@ def {self.fn.__name__}({', '.join(self.arg_names)}, grid, num_warps=4, num_stage
                  "self": self, "_spec_of": self._spec_of, "_key_of": self._key_of,
                  "cache": self.cache, "triton": triton,
                  "get_current_device": get_current_device,
-                 "set_current_device": set_current_device}
-        print(src)
+                 "set_current_device": set_current_device,
+                 "get_event_pool": get_event_pool}
+        #print(src)
         exec(src, scope)
         return scope[self.fn.__name__]
 

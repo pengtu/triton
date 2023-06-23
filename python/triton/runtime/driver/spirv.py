@@ -39,6 +39,7 @@ class SpirvUtils(object):
 
         static ze_context_handle_t context = {nullptr};
         static ze_driver_handle_t driverHandle = {nullptr};
+        static ze_event_pool_handle_t eventPoolHandle = {nullptr};
         
         static std::vector<ze_device_handle_t> devices;
         // Default immediate command list of each device
@@ -176,6 +177,20 @@ class SpirvUtils(object):
             // Py_RETURN_NONE;
         }
 
+        static PyObject* initEventPool(PyObject* self, PyObject* args) {
+            // Create event pool
+            ze_event_pool_desc_t tsEventPoolDesc = {
+                ZE_STRUCTURE_TYPE_EVENT_POOL_DESC,
+                nullptr,
+                ZE_EVENT_POOL_FLAG_HOST_VISIBLE, // all events in pool are visible to Host
+                1 // count
+            };
+            ZE_CHECK(zeEventPoolCreate(context, &tsEventPoolDesc, 0, nullptr, &eventPoolHandle));
+
+            return Py_BuildValue("(K)", (uint64_t)eventPoolHandle);
+            // Py_RETURN_NONE;
+        }
+
         static PyObject* initDevices(PyObject* self, PyObject *args) {
             // Retrieve devices
             uint32_t deviceCount = 0;
@@ -256,6 +271,7 @@ class SpirvUtils(object):
           {"init_context", initContext, METH_NOARGS, "Initialize the ZE GPU context"},
           {"init_devices", initDevices, METH_NOARGS, "Initialize the ZE GPU devices and return device count"},
           {"get_queue", getQueue, METH_VARARGS, "Get immediate command list for device_id"},
+          {"init_event_pool", initEventPool, METH_VARARGS, "Initialize ZE event pool"},
           {NULL, NULL, 0, NULL} // sentinel
         };
 
@@ -300,10 +316,14 @@ class SpirvUtils(object):
         self.get_queue = mod.get_queue
         self.context = mod.init_context()
         self.device_count = mod.init_devices()
+        self.event_pool = mod.init_event_pool()[0]
         self.current_device = 0 if self.device_count[0] > 0 else -1
 
     def get_current_device(instance):
         return instance.current_device
+    
+    def get_event_pool(instance):
+        return instance.event_pool
     
     def set_current_device(instance, idx):
         assert instance.device_count[0] > idx, "Device id not found"

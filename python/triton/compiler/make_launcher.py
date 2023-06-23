@@ -96,7 +96,7 @@ def generate_launcher(constants, signature):
             "int64_t": "L",
         }[ty]
 
-    format = "iiiiiKKOOO" + ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
+    format = "iiiiiKKOOOK" + ''.join([format_of(_extracted_type(ty)) for ty in signature.values()])
 
     # generate glue code
     if is_spirv():
@@ -127,14 +127,29 @@ def generate_launcher(constants, signature):
 
     #define ZE_CHECK(ans) {{ gpuAssert((ans), __FILE__, __LINE__); }}
 
-    static void _launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int shared_memory, ze_command_list_handle_t queue, ze_kernel_handle_t function, {arg_decls}) {{
+    static void _launch(uint32_t gridX, uint32_t gridY, uint32_t gridZ, int num_warps, int shared_memory, ze_command_list_handle_t queue, ze_kernel_handle_t function, ze_event_pool_handle_t event_pool, {arg_decls}) {{
       void *params[] = {{ {', '.join(f"&arg{i}" for i in signature.keys() if i not in constants)} }};
 
       if (gridX*gridY*gridZ > 0) {{
         {" ".join(f'zeKernelSetArgumentValue(function, {idx}, sizeof({ty_to_cpp(item)}), params[{idx}]);' for idx, item in enumerate([signature[i] for i in signature if i not in constants]))}
         zeKernelSetGroupSize(function, 32*num_warps, 1, 1);
         ze_group_count_t grpCount = {{gridX, gridY, gridZ}};
-        ZE_CHECK(zeCommandListAppendLaunchKernel(queue, function, &grpCount, nullptr, 0, nullptr));
+        std::cout << "Num_warps is " << num_warps << std::endl;
+
+        ze_event_desc_t eventDesc = {{
+            ZE_STRUCTURE_TYPE_EVENT_DESC,
+            nullptr,
+            0, 
+            0, 
+            ZE_EVENT_SCOPE_FLAG_HOST 
+        }};
+        ze_event_handle_t hEvent;
+        ZE_CHECK(zeEventCreate(event_pool, &eventDesc, &hEvent));
+
+        // Append a signal of an event into the command list after the kernel executes
+        ZE_CHECK(zeCommandListAppendLaunchKernel(queue, function, &grpCount, hEvent, 0, nullptr));
+        // Wait on event to complete
+        ZE_CHECK(zeEventHostSynchronize(hEvent, std::numeric_limits<uint64_t>::max()));
       }}
     }}
 
@@ -193,17 +208,29 @@ def generate_launcher(constants, signature):
       int gridX, gridY, gridZ;
       uint64_t _stream;
       uint64_t _function;
+      uint64_t _event_pool;
       int num_warps;
       int shared_memory;
       PyObject *launch_enter_hook = NULL;
       PyObject *launch_exit_hook = NULL;
       PyObject *compiled_kernel = NULL;
+      //PyObject *event_pool_handle = NULL;
       std::cout<< "!!!inside launch" << std::endl;
       
       {' '.join([f"{_extracted_type(ty)} _arg{i}; " for i, ty in signature.items()])}
-      if (!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &num_warps, &shared_memory, &_stream, &_function, &launch_enter_hook, &launch_exit_hook, &compiled_kernel, {', '.join(f"&_arg{i}" for i, ty in signature.items())})) {{
+      if (!PyArg_ParseTuple(args, \"{format}\", &gridX, &gridY, &gridZ, &num_warps, &shared_memory, &_stream, &_function, &launch_enter_hook, &launch_exit_hook, &compiled_kernel, &_event_pool, {', '.join(f"&_arg{i}" for i, ty in signature.items())})) {{
         return NULL;
       }}
+#if 0
+      if (PyLong_Check(event_pool_handle)) {{
+        _event_pool = PyLong_AsUnsignedLongLong(event_pool_handle);
+      }} else {{
+        PyTypeObject* obj_type = Py_TYPE(event_pool_handle);
+        std::cout << "Object Type is " << obj_type->tp_name << std::endl;
+        std::cout << "!!!Event pool handle invalid value" << std::endl;
+        return NULL;
+      }}
+#endif
 
       if (launch_enter_hook != Py_None) {{
         PyObject_CallObject(launch_enter_hook, args);
@@ -213,8 +240,8 @@ def generate_launcher(constants, signature):
       // raise exception asap
       // {"; ".join([f"DevicePtrInfo ptr_info{i} = getPointer(_arg{i}, {i}); if (!ptr_info{i}.valid) return NULL;" if ty[0] == "*" else "" for i, ty in signature.items()])};
       // std::cout << "!!!done _launch parameter setup" << std::endl;
-      _launch(gridX, gridY, gridZ, num_warps, shared_memory, (ze_command_list_handle_t)_stream, (ze_kernel_handle_t)_function, {', '.join(f"(void *) _arg{i}" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
-
+      _launch(gridX, gridY, gridZ, num_warps, shared_memory, (ze_command_list_handle_t)_stream, (ze_kernel_handle_t)_function, (ze_event_pool_handle_t)_event_pool, {', '.join(f"(void *) _arg{i}" if ty[0]=="*" else f"_arg{i}"for i, ty in signature.items())});
+      
       if (launch_exit_hook != Py_None) {{
         PyObject_CallObject(launch_exit_hook, args);
       }}

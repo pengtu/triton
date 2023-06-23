@@ -28,6 +28,12 @@ def TritonGPU_Dialect : Dialect {
             "TritonGPU module should contain a triton_gpu.num-warps attribute");
       return mod->getAttr("triton_gpu.num-warps").cast<IntegerAttr>().getInt();
     }
+    static int getThreadsPerWarp(ModuleOp mod) {
+      if(!mod->hasAttr("triton_gpu.threads-per-warp"))
+        llvm::report_fatal_error(
+            "TritonGPU module should contain a triton_gpu.threads-per-warp attribute");
+      return mod->getAttr("triton_gpu.threads-per-warp").cast<IntegerAttr>().getInt();
+    }
   }];
 
   let useDefaultAttributePrinterParser = 1;

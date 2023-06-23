@@ -99,6 +99,10 @@ static void amendLLVMFunc(llvm::Function *func, const NVVMMetadata &metadata,
       func->addFnAttr("amdgpu-flat-work-group-size", "1, 1024");
     } else if (isSPIRV) {
       func->setCallingConv(llvm::CallingConv::SPIR_KERNEL);
+      llvm::Metadata *mdArgs[] = {
+        llvm::ValueAsMetadata::get(llvm::ConstantInt::get(llvm::Type::getInt32Ty(ctx), 32))
+      };
+      func->setMetadata("intel_reqd_sub_group_size", llvm::MDNode::get(ctx, mdArgs));
     } else {
       llvm::Metadata *mdArgs[] = {
           llvm::ValueAsMetadata::get(func), llvm::MDString::get(ctx, "kernel"),

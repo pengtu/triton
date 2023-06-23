@@ -58,9 +58,9 @@ std::string translateLLVMIRToSPIRV(llvm::Module &module) {
   std::string Err;
 
   SPIRV::TranslatorOpts SPIRVOpts;
-  SPIRVOpts.enableAllExtensions();
-  SPIRVOpts.setMemToRegEnabled(true);
-  SPIRVOpts.setPreserveOCLKernelArgTypeMetadataThroughString(true);
+  // SPIRVOpts.enableAllExtensions();
+  // SPIRVOpts.setMemToRegEnabled(true);
+  // SPIRVOpts.setPreserveOCLKernelArgTypeMetadataThroughString(true);
   auto success = llvm::writeSpirv(&module, SPIRVOpts, OS, Err);
 
   if (!success) {

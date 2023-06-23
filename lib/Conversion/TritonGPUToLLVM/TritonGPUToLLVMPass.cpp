@@ -146,6 +146,8 @@ struct FuncOpToSPIRVConversion : public FuncOpToSPIRVConversionBase {
     ModuleOp mod = dyn_cast<ModuleOp>(funcOp->getParentOp());
     if (!mod)
       return failure();
+    
+    int threadsPerWarp = triton::gpu::TritonGPUDialect::getThreadsPerWarp(mod);
 
     auto fnType = funcOp.getFunctionType();
     if (fnType.getNumResults() > 1)
@@ -175,8 +177,11 @@ struct FuncOpToSPIRVConversion : public FuncOpToSPIRVConversionBase {
                                                 : TypeRange()));
 
     // Set the SPIRV kernel entry point
-    newFuncOp->setAttr(spirv::getEntryPointABIAttrName(), 
-      spirv::EntryPointABIAttr::get(getContext(), nullptr, std::nullopt));
+    OpBuilder builder(getContext());
+    auto workgroupSize = builder.getDenseI32ArrayAttr({32*threadsPerWarp, 1, 1});
+    auto entryPointAttr = spirv::EntryPointABIAttr::get(getContext(), workgroupSize, 32);
+    newFuncOp->setAttr(spirv::getEntryPointABIAttrName(), entryPointAttr);
+    newFuncOp->dump();
 
     // Copy over all attributes other than the function name and type.
     for (const auto &namedAttr : funcOp->getAttrs()) {
@@ -269,7 +274,7 @@ public:
         return signalPassFailure();
     }
 
-    // mod->dump();
+    mod->dump();
 
     std::unique_ptr<DataFlowSolver> solver = createDataFlowSolver();
     AxisInfoAnalysis *axisInfoAnalysis = solver->load<AxisInfoAnalysis>();
@@ -319,6 +324,7 @@ public:
           spirv::ClientAPI::OpenCL, spirv::Vendor::Unknown,
           spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
       SPIRVConversionOptions options;
+      // options.use64bitIndex = true;
       mod->setAttr(spirv::getTargetEnvAttrName(), targetAttr);
 
       TritonGPUToSPIRVTypeConverter spirvTypeConverter(targetAttr, options);
