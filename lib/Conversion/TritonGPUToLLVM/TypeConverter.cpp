@@ -141,17 +141,29 @@ TritonGPUToSPIRVTypeConverter::TritonGPUToSPIRVTypeConverter(
   addConversion([&](triton::PointerType type) -> llvm::Optional<Type> {
     return convertTritonPointerType(type);
   });
-  // Add generic source materialzation for the use of a SPIRV op with
-  // a result type different from the original source such as
-  // index_type gpu::group_id  
   addSourceMaterialization([&](OpBuilder &builder, Type resultType,
                                ValueRange inputs,
                                Location loc) -> Optional<Value> {
     if (inputs.size() != 1)
       return std::nullopt;
 
+    if (resultType.isa<IndexType>()) {
+      return builder.create<arith::TruncIOp>(loc, resultType, inputs);
+    }
     return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
-            .getResult(0);
+        .getResult(0);
+  });
+  addTargetMaterialization([&](OpBuilder &builder, Type resultType,
+                               ValueRange inputs,
+                               Location loc) -> Optional<Value> {
+    if (inputs.size() != 1)
+      return std::nullopt;
+
+    if (inputs[0].getType().isa<IndexType>()) {
+      return builder.create<arith::TruncIOp>(loc, resultType, inputs);
+    }
+    return builder.create<UnrealizedConversionCastOp>(loc, resultType, inputs)
+        .getResult(0);
   });
 }
 

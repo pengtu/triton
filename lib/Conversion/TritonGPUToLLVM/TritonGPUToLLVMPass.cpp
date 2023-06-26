@@ -324,10 +324,10 @@ public:
           spirv::ClientAPI::OpenCL, spirv::Vendor::Unknown,
           spirv::DeviceType::Unknown, spirv::TargetEnvAttr::kUnknownDeviceID);
       SPIRVConversionOptions options;
-      // options.use64bitIndex = true;
+      options.use64bitIndex = true;
       mod->setAttr(spirv::getTargetEnvAttrName(), targetAttr);
 
-      TritonGPUToSPIRVTypeConverter spirvTypeConverter(targetAttr, options);
+      SPIRVTypeConverter spirvTypeConverter(targetAttr, options);
       mlir::populateGPUToSPIRVPatterns(spirvTypeConverter, patterns);
       mlir::populateSPIRVToLLVMTypeConversion(typeConverter);
       mlir::populateSPIRVToLLVMConversionPatterns(typeConverter, patterns);
@@ -337,6 +337,7 @@ public:
 
     mlir::cf::populateControlFlowToLLVMConversionPatterns(typeConverter,
                                                           patterns);
+  //  mlir::arith::populateArithToLLVMConversionPatterns(typeConverter, patterns);
 
     if (failed(applyPartialConversion(mod, target, std::move(patterns))))
       return signalPassFailure();

@@ -150,6 +150,45 @@ if(NOT MLIR_DIR)
   set(MLIR_DIR ${LLVM_LIBRARY_DIR}/cmake/mlir)
 endif()
 
+# LLVMGenXIntrinsics - vc-intrinsics
+if (NOT TARGET LLVMGenXIntrinsics)
+  if(EXISTS "${LLVM_LIBRARY_PATH}/libLLVMGenXIntrinsics.a")
+    set(LLVMGenXIntrinsics_LIB_DIR "${LLVM_LIBRARY_PATH}")
+    set(LLVMGenXIntrinsics_INCLUDE_DIR "${LLVMGenXIntrinscs_LIB_DIR}/../include/llvm/GenXIntrinsics")
+  elseif(EXISTS "${LLVMGenXIntrinsics_LIB_DIR}/libLLVMGenXIntrinsics.a")
+    set(LLVMGenXIntrinsics_INCLUDE_DIR "${LLVMGenXIntrinscs_LIB_DIR}/../include/llvm/GenXIntrinsics")
+  else()
+    message(FATAL_ERROR "Can't find libLLVMGenXIntrinsics.a at ${LLVM_LIBRARY_DIR}. Please install it into that directory, or provide explicit path with -DLLVMGenXIntrinsics_DIR=")
+  endif()
+endif()
+include_directories(${LLVMGenXIntrinsics_INCLUDE_DIR})
+set(LLVMGenXIntrinsics_LDFLAGS "-L${LLVMGenXIntrinsics_INCLUDE_DIR}")
+set(LLVMGenXIntrinsics_LIBRARY
+  libLLVMGenXIntrinsics.a
+)
+message(STATUS "LLVMGenXIntrinsics_INCLUDE_DIR: ${LLVMGenXIntrinsics_INCLUDE_DIR}")
+message(STATUS "LLVMGenXIntrinsics_LIB_DIR: ${LLVMGenXIntrinsics_LIB_DIR}")
+
+# LLVM-SPIRV
+if(NOT DEFINED LLVM_SPIRV)
+  if(EXISTS "${LLVM_LIBRARY_DIR}/libLLVMSPIRVLib.a")
+    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_LIBRARY_DIR}/../include")
+    set(LLVM_SPRIV_LIB_DIR "${LLVM_LIBRARY_DIR}")    
+  elseif(EXISTS "${LLVM_SPIRV_DIR}/lib/libLLVMSPIRVLib.a")
+    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_SPIRV_DIR}/include")
+    set(LLVM_SPIRV_LIB_DIR "${LLVM_SPIRV_DIR}/lib")
+  else()
+    message(FATAL_ERROR "Can't find libLLVMSPIRVLib.a at ${LLVM_LIBRARY_DIR}. Please install it into that directory, or provide explicit path with -DLLVM_SPIRV_DIR=")
+  endif()
+endif()
+include_directories(${LLVM_SPIRV_INCLUDE_DIR})
+set(LLVM_SPIRV_LDFLAGS "-L${LLVM_SPIRV_LIB_DIR}")
+set(LLVM_SPIRV_LIBRARY
+  libLLVMSPIRVLib.a
+)
+message(STATUS "LLVM_SPIRV_INCLUDE_DIR: ${LLVM_SPIRV_INCLUDE_DIR}")
+message(STATUS "LLVM_SPIRV_LIB_DIR: ${LLVM_SPIRV_LIB_DIR}")
+
 # Python module
 if(TRITON_BUILD_PYTHON_MODULE)
   message(STATUS "Adding Python module")
@@ -200,45 +239,6 @@ include_directories(${PROJECT_BINARY_DIR}/include) # Tablegen'd files
 add_subdirectory(include)
 add_subdirectory(lib)
 #add_subdirectory(bin)
-
-# LLVMGenXIntrinsics - vc-intrinsics
-if (NOT TARGET LLVMGenXIntrinsics)
-  if(EXISTS "${LLVM_LIBRARY_PATH}/libLLVMGenXIntrinsics.a")
-    set(LLVMGenXIntrinsics_LIB_DIR "${LLVM_LIBRARY_PATH}")
-    set(LLVMGenXIntrinsics_INCLUDE_DIR "${LLVMGenXIntrinscs_LIB_DIR}/../include/llvm/GenXIntrinsics")
-  elseif(EXISTS "${LLVMGenXIntrinsics_LIB_DIR}/libLLVMGenXIntrinsics.a")
-    set(LLVMGenXIntrinsics_INCLUDE_DIR "${LLVMGenXIntrinscs_LIB_DIR}/../include/llvm/GenXIntrinsics")
-  else()
-    message(FATAL_ERROR "Can't find libLLVMGenXIntrinsics.a at ${LLVM_LIBRARY_DIR}. Please install it into that directory, or provide explicit path with -DLLVMGenXIntrinsics_DIR=")
-  endif()
-endif()
-include_directories(${LLVMGenXIntrinsics_INCLUDE_DIR})
-set(LLVMGenXIntrinsics_LDFLAGS "-L${LLVMGenXIntrinsics_INCLUDE_DIR}")
-set(LLVMGenXIntrinsics_LIBRARY
-  libLLVMGenXIntrinsics.a
-)
-message(STATUS "LLVMGenXIntrinsics_INCLUDE_DIR: ${LLVMGenXIntrinsics_INCLUDE_DIR}")
-message(STATUS "LLVMGenXIntrinsics_LIB_DIR: ${LLVMGenXIntrinsics_LIB_DIR}")
-
-# LLVM-SPIRV
-if(NOT DEFINED LLVM_SPIRV)
-  if(EXISTS "${LLVM_LIBRARY_DIR}/libLLVMSPIRVLib.a")
-    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_LIBRARY_DIR}/../include")
-    set(LLVM_SPRIV_LIB_DIR "${LLVM_LIBRARY_DIR}")    
-  elseif(EXISTS "${LLVM_SPIRV_DIR}/lib/libLLVMSPIRVLib.a")
-    set(LLVM_SPIRV_INCLUDE_DIR "${LLVM_SPIRV_DIR}/include")
-    set(LLVM_SPIRV_LIB_DIR "${LLVM_SPIRV_DIR}/lib")
-  else()
-    message(FATAL_ERROR "Can't find libLLVMSPIRVLib.a at ${LLVM_LIBRARY_DIR}. Please install it into that directory, or provide explicit path with -DLLVM_SPIRV_DIR=")
-  endif()
-endif()
-include_directories(${LLVM_SPIRV_INCLUDE_DIR})
-set(LLVM_SPIRV_LDFLAGS "-L${LLVM_SPIRV_LIB_DIR}")
-set(LLVM_SPIRV_LIBRARY
-  libLLVMSPIRVLib.a
-)
-message(STATUS "LLVM_SPIRV_INCLUDE_DIR: ${LLVM_SPIRV_INCLUDE_DIR}")
-message(STATUS "LLVM_SPIRV_LIB_DIR: ${LLVM_SPIRV_LIB_DIR}")
 
 # find_package(PythonLibs REQUIRED)
 set(TRITON_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")

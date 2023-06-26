@@ -390,6 +390,7 @@ struct GetProgramIdOpConversion
     Value blockId =
         rewriter.create<::mlir::gpu::BlockIdOp>(loc, dims[op.getAxis()]);
     rewriter.replaceOpWithNewOp<arith::TruncIOp>(op, i32_ty, blockId);
+  //  rewriter.replaceOpWithNewOp<arith::IndexCastOp>(op, i32_ty, blockId);    
     return success();
   }
 
