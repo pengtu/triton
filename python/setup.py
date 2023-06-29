@@ -168,6 +168,8 @@ class CMakeBuild(build_ext):
         if not user_home:
             raise RuntimeError("Could not find user home directory")
         triton_cache_path = os.path.join(user_home, ".triton")
+        llvm_spirv_path = os.path.join(user_home, "packages/llvm-spirv")
+        genx_lib_path = os.path.join(user_home, "packages/lib")
         # lit is used by the test suite
         thirdparty_cmake_args = get_thirdparty_packages(triton_cache_path)
         extdir = os.path.abspath(os.path.dirname(self.get_ext_fullpath(ext.path)))
@@ -179,8 +181,8 @@ class CMakeBuild(build_ext):
         cmake_args = [
             "-DLLVM_ENABLE_WERROR=ON",
             "-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=" + extdir,
-            "-DLLVM_SPIRV_DIR=/home/ptu1/packages/llvm-spirv",
-            "-DLLVMGenXIntrinsics_LIB_DIR=/home/ptu1/packages/lib",
+            "-DLLVM_SPIRV_DIR=" + llvm_spirv_path,
+            "-DLLVMGenXIntrinsics_LIB_DIR=" + genx_lib_path,
             "-DTRITON_BUILD_TUTORIALS=OFF",
             "-DTRITON_BUILD_PYTHON_MODULE=ON",
             "-DPython3_EXECUTABLE:FILEPATH=" + sys.executable,
