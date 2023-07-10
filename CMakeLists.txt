@@ -162,7 +162,7 @@ if (NOT TARGET LLVMGenXIntrinsics)
   endif()
 endif()
 include_directories(${LLVMGenXIntrinsics_INCLUDE_DIR})
-set(LLVMGenXIntrinsics_LDFLAGS "-L${LLVMGenXIntrinsics_INCLUDE_DIR}")
+set(LLVMGenXIntrinsics_LDFLAGS "-L${LLVMGenXIntrinsics_LIB_DIR}")
 set(LLVMGenXIntrinsics_LIBRARY
   libLLVMGenXIntrinsics.a
 )
