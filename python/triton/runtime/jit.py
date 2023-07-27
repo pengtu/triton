@@ -9,7 +9,6 @@ import subprocess
 import textwrap
 from collections import defaultdict, namedtuple
 from typing import Callable, Generic, Iterable, Optional, TypeVar, Union, cast, overload
-from log_calls import log_calls
 
 import torch
 import intel_extension_for_pytorch as ipex
